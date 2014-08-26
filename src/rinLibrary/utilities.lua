@@ -40,9 +40,11 @@ return function(mod, private, deprecated)
 -- @see addRegisters
 -- @local
     local function addRegister(reg, num)
-        local r = lower(reg)
-        regMap[r] = num
-        regUnmap[num] = r
+        if num ~= nil then
+            local r = lower(reg)
+            regMap[r] = num
+            regUnmap[num] = r
+        end
     end
 
 -------------------------------------------------------------------------------
@@ -89,15 +91,16 @@ return function(mod, private, deprecated)
 -- Convert a string register name to the associated register number.
 -- @function getRegisterNumber
 -- @param r Register name or number
+-- @param silent Don't error out on an unknown register (optional, default noisy)
 -- @return Register number
 -- @see getRegisterName
 -- @usage
 -- -- Find out what register number the gross weight is stored in
 -- print(private.getRegisterNumber('gross')
 -- @local
-    function private.getRegisterNumber(r)
+    function private.getRegisterNumber(r, silent)
         local n = naming.convertNameToValue(r, regMap)
-        if n == nil then
+        if n == nil and not silent then
             dbg.error('rinLibrary: ', 'bad register '..tostring(r))
             local unknown_register unknown_register[nil] = nil
         end
@@ -134,6 +137,27 @@ return function(mod, private, deprecated)
                 rawset(deprecated, 'REG_' .. string.upper(reg), n)
             end
         end
+    end
+
+-------------------------------------------------------------------------------
+-- Expose a function if the given condition isn't false.
+-- If the condition is false, a stub routine is instead installed that
+-- prints an error including the function name.
+-- @function exposeFunction
+-- @param n Name of the field to be exposed
+-- @param b Boolean condition to check
+-- @param f Function to call if the boolean isn't false
+-- @return The function or a no-op stub
+-- @local
+    function private.exposeFunction(n, b, f)
+        if b then
+            mod[n] = f
+            return f
+        end
+        mod[n] = function()
+            dbg.error('K400:', 'call to invalid function '..n)
+        end
+        return function() end
     end
 
 -------------------------------------------------------------------------------
@@ -179,7 +203,7 @@ return function(mod, private, deprecated)
 -- @param v Value to return if we're the specified device
 -- @return v or nil
 -- @local
-    for _, d in pairs{'k401', 'k402', 'k410', 'k491'} do
+    for _, d in pairs{'k401', 'k402', 'k410', 'k422', 'k491'} do
         private[d] = (private.deviceType == d) and willy or nilly
     end
 

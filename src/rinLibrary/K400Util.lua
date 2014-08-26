@@ -25,7 +25,7 @@ return function (_M, private, deprecated)
 
 local REG_RESTART           = 0x0016
 local REG_SAVESETTING       = 0x0010
-local REG_COMMS_START       = 0x0309
+local REG_COMMS_START       = private.valueByDevice{ k422='nil', default=0x0309 }
 local REG_SOFTMODEL         = 0x0003
 local REG_SOFTVER           = 0x0004
 private.REG_SERIALNO        = 0x0005
@@ -123,7 +123,7 @@ end
 -- @usage
 -- print(device.getDispModeDP('primary')..' decimal places in the primary display')
 function _M.getDispModeDP(display)
-    local d = naming.convertStringToValue(display, displayModeMap, nil,
+    local d = naming.convertNameToValue(display, displayModeMap, nil,
                                             DISPMODE_PRIMARY, DISPMODE_SECONDARY)
 
     if d ~= nil then

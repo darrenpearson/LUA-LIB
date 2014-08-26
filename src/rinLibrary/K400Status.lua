@@ -91,11 +91,11 @@ local sysStatusMap = {
     tilty           = private.k491(0x00400000)
 }
 
-local REG_LUA_STATUS   = 0x0329
-local REG_LUA_ESTAT    = 0x0305
-local REG_LUA_STAT_RTC = 0x032A
-local REG_SETPSTATUS   = 0x032E
-local REG_LUA_STAT_NET = 0x030A
+local REG_LUA_STATUS   = private.valueByDevice{ k422='nil', default=0x0329 }
+local REG_LUA_ESTAT    = private.valueByDevice{ k422='nil', default=0x0305 }
+local REG_LUA_STAT_RTC = private.valueByDevice{ k422='nil', default=0x032A }
+local REG_SETPSTATUS   = private.valueByDevice{ k422='nil', default=0x032E }
+local REG_LUA_STAT_NET = private.valueByDevice{ k422='nil', default=0x030A }
 
 --- Status Bits for register lua_status.
 --@table luastatus
@@ -824,7 +824,7 @@ end
 -- device.waitIO(1, true) -- wait until IO1 turns on
 function _M.waitIO(IO, state)
     local mask = bit32.lshift(0x00000001, IO-1)
-    while _M.app.running do
+    while _M.app.isRunning() do
         local data = bit32.band(curIO, mask)
         if (state and data ~= 0) or (not state and data == 0) then
             break
@@ -851,7 +851,7 @@ function _M.waitSETP(SETP, state)
         return false
     end
     local mask = bit32.lshift(0x00000001, SETP-1)
-    while _M.app.running do
+    while _M.app.isRunning() do
         local data = bit32.band(curSETP, mask)
         if (state and data ~= 0) or (not state and data == 0) then
             break
@@ -915,10 +915,10 @@ end
 -- device.setupStatus()
 function _M.setupStatus()
     curStatus = 0
-    statID  = private.addStreamLib(REG_LUA_STATUS, statusCallback,  'change')
-    eStatID = private.addStreamLib(REG_LUA_ESTAT,  eStatusCallback, 'change')
-    IOID    = private.addStreamLib('io_status',    IOCallback,      'change')
-    SETPID  = private.addStreamLib(REG_SETPSTATUS, SETPCallback,    'change')
+    statID  = _M.addStream(REG_LUA_STATUS, statusCallback,  'change')
+    eStatID = _M.addStream(REG_LUA_ESTAT,  eStatusCallback, 'change')
+    IOID    = _M.addStream('io_status',    IOCallback,      'change')
+    SETPID  = _M.addStream(REG_SETPSTATUS, SETPCallback,    'change')
     _M.RTCread()
     _M.setEStatusMainCallback('rtc',  handleRTC)
     _M.setEStatusMainCallback('init', handleINIT)
@@ -931,10 +931,10 @@ end
 -- @usage
 -- device.endStatus()
 function _M.endStatus()
-    private.removeStreamLib(statID)
-    private.removeStreamLib(eStatID)
-    private.removeStreamLib(IOID)
-    private.removeStreamLib(SETPID)
+    _M.removeStream(statID)
+    _M.removeStream(eStatID)
+    _M.removeStream(IOID)
+    _M.removeStream(SETPID)
 end
 
 -------------------------------------------------------------------------------

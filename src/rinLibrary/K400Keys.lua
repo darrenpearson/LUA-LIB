@@ -302,7 +302,10 @@ end
 -- @param err Potential error message
 -- @local
 keyCallback = function(data, err)
-    if data == KEY_IDLE then return end
+    if type(data) ~= 'number' then
+        data = tonumber(data, 16)
+    end
+    if data == KEY_IDLE or data == nil then return end
 
     local state = "short"
     local key = bit32.band(data, 0x3F)
@@ -420,7 +423,7 @@ end
 function _M.setupKeys()
     _M.flushKeys()
     private.writeRegHex(REG_APP_KEY_HANDLER, 1)
-    keyID = private.addStreamLib(REG_GET_KEY, keyCallback, 'change')
+    keyID = _M.addStream(REG_GET_KEY, keyCallback, 'change')
 end
 
 -------------------------------------------------------------------------------
@@ -508,7 +511,7 @@ end
 -- local function handleKey(key, state)
 --     showMarquee(string.format("%s Pressed ", key))
 --     if key == 'cancel' and state == 'long' then 
---         rinApp.running = false
+--         rinApp.finish()
 --     end
 --     return true     -- key handled so don't send back to instrument
 -- end

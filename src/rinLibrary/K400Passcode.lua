@@ -49,7 +49,7 @@ function _M.checkPasscode(pc, code, tries)
     local count = 1
 
     _M.startDialog()
-    while _M.dialogRunning() and _M.app.running do
+    while _M.dialogRunning() and _M.app.isRunning() do
         local m, err = private.readRegHex(pcode, 1.0)
         if not m then
             if count > tries then
@@ -58,7 +58,7 @@ function _M.checkPasscode(pc, code, tries)
                 return false
             end
             if count > 1 and err then
-                _M.writeBotLeft(string.upper(err),1.0)
+                private.writeBotLeft(string.upper(err),1.0)
                 _M.buzz(1,_M.BUZZ_LONG)
                 _M.delay(2.0)
             end
