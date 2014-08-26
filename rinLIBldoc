@@ -1,0 +1,2 @@
+#!/bin/sh -u
+lua /usr/local/share/lua/5.1/ldoc.lua src -d /usr/local/www/html/ -o rinLIB

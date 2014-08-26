@@ -1,0 +1,18 @@
+diff a/src/rinLibrary/rinDebug.lua b/src/rinLibrary/rinDebug.lua	(rejected hunks)
+@@ -117,8 +117,16 @@
+      
+  	_M.setConfig(config)
+      _M.setLevel(_M.config.level)
+++<<<<<<< Updated upstream
+ +    _M.timestamp = _M.config.timestamp
+ +
+++=======
++     _M.timestamp = string.lower(tostring(_M.config.timestamp)) == 'true'
++    
++     if type(ip) == "string" then
++         _M.ip = string.rep(" ", 15-#ip) .. ip
++     end
+++>>>>>>> Stashed changes
+  end
+  -------------------------------------------------------------------------------
+  -- returns debug configuration

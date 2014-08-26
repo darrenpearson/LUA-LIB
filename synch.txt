@@ -1,0 +1,15 @@
+# Automatically abort script on errors
+option batch abort
+# Disable overwrite confirmations that conflict with the previous
+option confirm off
+# Connect as a different user
+open ftp://host:host@172.17.1.127/
+# Change the remote directory
+cd /home/src
+# Upload the file to current working directory
+put w:\lua-lib\src\*.lua 
+# Disconnect
+close
+# Exit WinSCP
+exit
+
