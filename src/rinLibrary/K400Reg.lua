@@ -44,6 +44,7 @@ private.addRegisters{
 -- @field altnet Net weight in secondary units
 -- @field fullscale Fullscale weight
 -- @field piececount Piece count
+-- @field unfiltered_weight Raw weight readings
 
     adcsample               = 0x0020,
     sysstatus               = 0x0021,
@@ -170,13 +171,13 @@ local function sendRegWait(cmd, reg, data, t, crc)
         return nil, "Unknown Register"
     end
 
-    local waiting = true
+    local finished = false
     local regData = ''
     local regErr = ''
     local function waitf(data, err)
           regData = data
           regErr = err
-          waiting = false
+          finished = true
     end
 
     local f = private.getDeviceRegister(r)
@@ -184,10 +185,7 @@ local function sendRegWait(cmd, reg, data, t, crc)
     private.send(nil, cmd, r, data, "reply", crc)
     local tmr = timers.addTimer(0, t or 2.0, waitf, nil, 'Timeout')
 
-    while waiting do
-        system.handleEvents()
-    end
-
+    _M.app.delayUntil(function() return finished end)
     private.bindRegister(r, f)
 
     timers.removeTimer(tmr)

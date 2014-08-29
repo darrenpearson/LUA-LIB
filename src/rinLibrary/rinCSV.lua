@@ -17,30 +17,16 @@ local error     = error
 local xeq       = os.execute
 
 local dbg       = require "rinLibrary.rinDebug"
+local canonical = require 'rinLibrary.canonicalisation'
 
 -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -
 -- LPEG pattern for parsing a CSV file
 local lpeg = require 'lpeg'
 local C, Cs, Ct, P, S = lpeg.C, lpeg.Cs, lpeg.Ct, lpeg.P, lpeg.S
-local spc = lpeg.locale().space
-local nspc = 1 - spc
-
-local canonicalisation = spc^0 * Cs(nspc^0 * (spc^1 / ' ' * nspc^1)^0) * spc^0
 
 local field = '"' * Cs(((P(1) - '"') + P'""' / '"')^0) * '"' +
                     C((1 - S',\r\n"')^0)
 local record = Ct(field * (',' * field)^0) * (S('\r\n')^1 + -1)
-
--------------------------------------------------------------------------------
--- Convert a field value into its canonical matching form.
--- This means lower case and without leading and trailing space and only single
--- internal spaces.
--- @param s String to convert
--- @return Canonical form for string
--- @local
-local function canonical(s)
-    return string.lower(canonicalisation:match(tostring(s)))
-end
 
 -------------------------------------------------------------------------------
 -- Takes an escaped CSV string and returns a line (1d array)
@@ -236,7 +222,7 @@ end
 -- -- Append a line to the CSV file and write it back to storage
 -- local csv = require('rinLibrary.rinCSV')
 -- local csvfile = { fname = '/tmp/temporary-file' }
--- 
+--
 -- csv.loadCSV(csvfile)
 -- csv.addLineCSV(csvfile, { 1, 2, 3 })
 -- csv.saveCSV(csvfile)
@@ -275,7 +261,7 @@ end
 -- -- Append a line to the CSV file and write it back to storage
 -- local csv = require('rinLibrary.rinCSV')
 -- local csvfile = { fname = '/tmp/temporary-file' }
--- 
+--
 -- csv.loadCSV(csvfile)
 -- csv.addLineCSV(csvfile, { 1, 2, 3 })
 -- csv.saveCSV(csvfile)
@@ -371,11 +357,11 @@ end
 -- @param t is table describing CSV data
 -- @param line is a row of data (1d array) to save
 -- @see addLineCSV
--- @usage 
+-- @usage
 -- -- Append a line to the CSV file in storage but not in memory
 -- local csv = require('rinLibrary.rinCSV')
 -- local csvfile = { fname = '/tmp/temporary-file' }
--- 
+--
 -- csv.loadCSV(csvfile)
 -- csv.logLineCSV(csvfile, { 1, 2, 3 })
 function _M.logLineCSV(t, line)
@@ -399,7 +385,7 @@ end
 -- -- Append a line to the CSV file and write it back to storage
 -- local csv = require('rinLibrary.rinCSV')
 -- local csvfile = { fname = '/tmp/temporary-file' }
--- 
+--
 -- csv.loadCSV(csvfile)
 -- csv.addLineCSV(csvfile, { 1, 2, 3 })
 -- csv.saveCSV(csvfile)
@@ -449,7 +435,7 @@ end
 -- -- Remove all lines from the CSV table
 -- local csv = require('rinLibrary.rinCSV')
 -- local csvfile = { fname = '/tmp/temporary-file' }
--- 
+--
 -- csv.loadCSV(csvfile)
 -- while csv.numRowsCSV(csvfile) > 0 do
 --     csv.remLineCSV(csvfile)
@@ -476,7 +462,7 @@ local function lookupColumn(t, c)
     end
     return c
 end
-    
+
 -------------------------------------------------------------------------------
 -- Returns a line of data from the table with matching val in column col
 -- @param t is table holding CSV data
@@ -487,7 +473,7 @@ end
 -- @usage
 -- local csv = require('rinLibrary.rinCSV')
 -- local csvfile = { fname = '/tmp/temporary-file' }
--- 
+--
 -- csv.loadCSV(csvfile)
 --
 -- -- Search for the value 3.14159 in the third column
@@ -502,7 +488,36 @@ function _M.getLineCSV(t, val, col)
             return k, v
         end
     end
-    return nil, line
+    return nil, nil
+end
+
+-------------------------------------------------------------------------------
+-- Return a table containung a row of a CSV file.  Unlike getLineCSV, the
+-- fields are named using the column labels.
+-- @param t is table holding CSV data
+-- @param val is value of the cell to find
+-- @param col is the column of data to match (default is col 1)
+-- @return table containing the fields index by their canonical names
+-- @usage
+-- local csv = require('rinLibrary.rinCSV')
+-- local csvfile = { fname = '/tmp/temporary-file', labels = { 'a', 'b', 'c' } }
+--
+-- csv.loadCSV(csvfile)
+--
+-- -- Search for the value 3.14159 in the C column
+-- local row = csv.getRecordCSV(csvfile, 3.14159, 'c')
+-- print('A is', row.a)
+function _M.getRecordCSV(t, val, col)
+    if hasData(t) then
+        local ret, line = {}
+
+        _, line = _M.getLineCSV(t, val, col)
+        for i = 1, #t.labels do
+            ret[canonical(t.labels[i])] = line[i]
+        end
+        return ret
+    end
+    return nil
 end
 
 -------------------------------------------------------------------------------
@@ -535,6 +550,33 @@ function _M.getColCSV(csvtbl, col)
 end
 
 -------------------------------------------------------------------------------
+-- Clean up a CSV table converting all field names and string fields into
+-- a canonical form.
+-- @param t CSV table to convert
+-- @usage
+-- local csv = require('rinLibrary.rinCSV')
+-- local csvfile = { fname = '/tmp/temporary-file' }
+--
+-- csv.loadCSV(csvfile)
+-- csv.cleanCSV(csvTable)
+-- csv.saveCSV(csvfile)
+function _M.cleanCSV(t)
+    if isCSV(t) then
+        local d = hasData(t)
+        for i = 1, #t.labels do
+            t.labels[i] = canonical(t.labels[i])
+            if d then
+                for j = 1, #t.data do
+                    if type(t.data[j][i]) == 'string' then
+                        t.data[j][i] = canonical(t.data[j][i])
+                    end
+                end
+            end
+        end
+    end
+end
+
+-------------------------------------------------------------------------------
 -- Replaces a line of data in the table (does not save the .CSV file)
 -- @param t is table holding CSV data
 -- @param row is the row number of the line of data
@@ -542,7 +584,7 @@ end
 -- @usage
 -- local csv = require('rinLibrary.rinCSV')
 -- local csvfile = { fname = '/tmp/temporary-file' }
--- 
+--
 -- csv.loadCSV(csvfile)
 -- csv.replaceLineCSV(csvfile, 3, { 1, 4, 9, 16 })
 -- csv.saveCSV(csvfile)
@@ -564,7 +606,7 @@ end
 -- @usage
 -- local csv = require('rinLibrary.rinCSV')
 -- local csvfile = { fname = '/tmp/temporary-file' }
--- 
+--
 -- csv.loadCSV(csvfile)
 -- print('The materials column is ' .. csv.labelCol(csvfile, 'material'))
 function _M.labelCol(t, label)
@@ -588,7 +630,7 @@ end
 -- @usage
 -- local csv = require('rinLibrary.rinCSV')
 -- local csvfile = { fname = '/tmp/temporary-file' }
--- 
+--
 -- csv.loadCSV(csvfile)
 -- print(csv.tostringCSV(csvtile))
 function _M.tostringCSV(t,w)
@@ -655,7 +697,7 @@ end
 -- @usage
 -- local csv = require('rinLibrary.rinCSV')
 -- local csvfile = { fname = '/tmp/temporary-file' }
--- 
+--
 -- csv.loadCSV(csvfile)
 -- print("the table has " .. csv.numRowsCSV(csvfile) .. " rows")
 function _M.numRowsCSV(t)
@@ -670,7 +712,7 @@ end
 -- @usage
 -- local csv = require('rinLibrary.rinCSV')
 -- local csvfile = { fname = '/tmp/temporary-file' }
--- 
+--
 -- csv.loadCSV(csvfile)
 -- print("the table has " .. csv.numRowsCSV(csvfile) .. " columns")
 function _M.numColsCSV(t)
@@ -816,7 +858,6 @@ if _TEST then
     _M.fromCSV = fromCSV
     _M.padCSV = padCSV
     _M.toCSV = toCSV
-    _M.canonical = canonical
 end
 
 return _M

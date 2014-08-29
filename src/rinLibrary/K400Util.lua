@@ -25,13 +25,14 @@ return function (_M, private, deprecated)
 
 local REG_RESTART           = 0x0016
 local REG_SAVESETTING       = 0x0010
-local REG_COMMS_START       = private.valueByDevice{ k422='nil', default=0x0309 }
+local REG_COMMS_START       = 0x0309
 local REG_SOFTMODEL         = 0x0003
 local REG_SOFTVER           = 0x0004
 private.REG_SERIALNO        = 0x0005
 
 local REG_PRIMARY_DISPMODE   = 0x0306
 local REG_SECONDARY_DISPMODE = 0x0307
+local REG_INSTRUMENT_BEGIN   = 0x032D
 
 local DISPMODE_PRIMARY      = 1
 local DISPMODE_PIECES       = 2
@@ -83,6 +84,9 @@ function _M.connect(model, sockA, sockB, app)
     _M.socketB = sockB
     _M.app = app
     local ip, port = sockA:getpeername()
+
+    -- Force the instrument to a known initial state
+    private.exRegAsync(REG_INSTRUMENT_BEGIN)
 end
 
 -------------------------------------------------------------------------------
@@ -190,7 +194,7 @@ function _M.configure(model)
 
     readSettings()
 
-    private.exReg(REG_COMMS_START)  -- clear start message
+    private.exRegAsync(REG_COMMS_START)  -- clear start message
 
     if err then
         instrumentModel = ''

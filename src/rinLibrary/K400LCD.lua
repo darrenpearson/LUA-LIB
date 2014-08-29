@@ -13,11 +13,24 @@ local bit32 = require "bit"
 local timers = require 'rinSystem.rinTimers.Pack'
 local naming = require 'rinLibrary.namings'
 local dbg = require "rinLibrary.rinDebug"
+local system = require "rinSystem.Pack"
+local deepcopy = require 'rinLibrary.deepcopy'
 
 local lpeg = require 'lpeg'
-local Cs, P = lpeg.Cs, lpeg.P
+local C, Cg, Cs, Ct, P, R, S, V = lpeg.C, lpeg.Cg, lpeg.Cs, lpeg.Ct, lpeg.P, lpeg.R, lpeg.S, lpeg.V
 local sdot = P'.'
 local scdot = (1 - sdot) * sdot^-1
+
+-- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -
+-- Define a pattern to match the display options and produce an option table.
+local digits, mpm = R'09'^1, S'+-'^-1
+local float = mpm * (digits * (P'.'*R'09'^0)^-1 + P'.'*digits) * (S'eE'*mpm*digits)^-1
+local function boolArg(s) return Cg(P(s), s) end
+local writeArgPat = P{
+            Ct((V'opt' * (S', '^1 * V'opt')^0)^-1) * P(-1),
+    opt =   V'time' + boolArg'clear' + boolArg'wait' + boolArg'once',
+    time =  P'time=' * Cg(float / tonumber, 'time')
+}
 
 -------------------------------------------------------------------------------
 -- Return the number of LCD characters a string will consume.
@@ -147,31 +160,69 @@ local botAnnunState = 0
 local topAnnunState = 0
 local waitPos = 1
 
-local curTopLeft = ''
-local curTopRight = ''
-local curBotLeft = ''
-local curBotRight = ''
-local curTopUnits = 0
-local curBotUnits = 0
-local curBotUnitsOther = 0
-local curAutoTopLeft = 0
-local curAutoBotLeft = 0
+local display = {
+    tl = {
+        top = true, left = true,
+        length = 6,
+        reg = REG_DISP_TOP_LEFT,
+        regUnits = REG_DISP_TOP_UNITS,
+        regAuto = REG_DISP_AUTO_TOP_LEFT,
+        format = '%-6s',
+        units = nil,    saveUnits = 0,
+        auto = nil,     saveAuto = 0
+    },
+    
+    tr = {
+        top = true, right = true,
+        length = 4,
+        reg = REG_DISP_TOP_RIGHT,
+    },
 
-local saveBotLeft = ''
-local saveAutoTopLeft = 0
-local saveAutoBotLeft = 0
-local saveBotRight = ''
-local saveBotUnits = 0
-local saveBotUnitsOther = 0
+    bl = {
+        bottom = true,  left = true,
+        length = 8,
+        reg = REG_DISP_BOTTOM_LEFT,
+        regUnits = REG_DISP_BOTTOM_UNITS,
+        regAuto = REG_DISP_AUTO_BOTTOM_LEFT,
+        format = '%-8s',
+        units = nil,    saveUnits = 0,
+        auto = nil,     saveAuto = 0
+    },
 
-local slideBotLeftPos, slideBotLeftWords, slideBotLeftTimer
-local slideBotRightPos, slideBotRightWords, slideBotRightTimer
-local slideTopLeftPos, slideTopLeftWords, slideTopLeftTimer
+    br = {
+        bottom = true,  right = true,
+        length = 8,
+        reg = REG_DISP_BOTTOM_RIGHT,
+        format = '%-8s'
+    }
+}
 
-local writeTopLeft, writeTopRight
-local writeAutoTopLeft, readAutoTopLeft, writeAutoTopAnnun
-local writeAutoBotLeft, readAutoBotLeft
-local writeTopUnits
+--- Display Control Modes.
+--
+-- The control parameter for the write to display functions is reasonably
+-- complex.
+--
+-- If this parameter is left nil, defaults are used for all settings (see below).
+--
+-- If this parameter is a number, it is treated as the time between segments
+-- of the message to display.  The other settings default as below.
+--
+-- The this parameter is a string, it is considered to be a space or comma separated list
+-- of values.  For example, the string <i>"time=2, once, clear"</i>
+-- specified a two second display between elements, clear the field after wards and only display
+-- the message once.
+--
+-- If this parameter is a table, it contains a number of fields which fine tune
+-- the display behaviour.  These fields are described below.
+--
+-- @table displayControl
+-- @field time The time parameter is the number of second between the display being updated (default 0.8).
+-- @field once Once is a boolean that forces the message to be shown once rather
+-- than repeating (default: repeat/display forever).
+-- @field wait Wait is a boolean for causes the display call to not return until after
+-- the message has been fully displayed (default: don't wait).  The wait implies the once option.
+-- @field clear Clear is a boolean, that clears the message from the display once it has been
+-- shown (default: don't clear).  The clear implies the once option.
 
 --- LCD Control Modes.
 --@table lcdControlModes
@@ -181,11 +232,11 @@ local writeTopUnits
 -- @field master Change to master display mode
 -- @field product Change to product display mode
 local lcdModes = {
-    default = private.k410(0) or 1,
-    dual    = private.k410(0) or 1,
+    default = private.k410(0) or private.k422(0) or 1,
+    dual    = private.k410(0) or 1,                             -- dynamic
     lua     = private.k410(1) or 2,
     master  = private.k410(2) or 3,
-    product = private.k402(0) or private.k491(0)
+    product = private.valueByDevice{ k402=0, k422=0, k491=0 }   -- normal
 }
 
 -------------------------------------------------------------------------------
@@ -224,7 +275,162 @@ function _M.rightJustify(s, w)
     if l >= w then
         return s
     end
+    if s:sub(1,1) == '.' then l = l - 1 end
     return string.rep(" ", w-l) .. s
+end
+
+-------------------------------------------------------------------------------
+-- Remove the timer associated with sliding the display, if present and
+-- clean up
+local function removeSlideTimer(f)
+    timers.removeTimer(f.slideTimer)
+    f.slideTimer = nil
+end
+
+-------------------------------------------------------------------------------
+-- Query the auto register for a display field
+-- @param f Display field
+-- @return Register name
+-- @local
+local function readAuto(f)
+    if f.regAuto == nil then return nil end
+    local reg = private.readRegDec(f.regAuto)
+    reg = tonumber(reg)
+    f.auto = reg
+    return private.getRegisterName(reg)
+end
+
+-------------------------------------------------------------------------------
+-- Set the auto register for a display field
+-- @param f Display field
+-- @param register Register name
+-- @local
+local function writeAuto(f, register)
+    local reg = private.getRegisterNumber(register)
+
+    if f.regAuto ~= nil and reg ~= f.auto then
+        removeSlideTimer(f)
+        f.current = nil
+        private.writeRegHexAsync(f.regAuto, reg)
+        f.saveAuto = f.auto
+        f.auto = reg
+    end
+end
+
+-------------------------------------------------------------------------------
+-- Decode the time argument to the write function.
+-- The input argument can be a number which is interpreted as a time,
+-- it can be nil for all defaults or it can be a table which is returned
+-- unchanged.
+-- @param t Input time/param value
+-- @local
+local function writeArgs(t)
+    if t == nil then
+        return {}
+    elseif type(t) == 'number' then
+        return { time = t }
+    elseif type(t) == 'string' then
+        local r = writeArgPat:match(t)
+        if r == nil then
+            dbg.error("K400LCD: unparsable display parameter:", t)
+            return {}
+        end
+        return r
+    elseif type(t) == 'table' then
+        return deepcopy(t)
+    end
+    dbg.error("K400LCD: unknown display parameter:", tostring(t))
+    return {}
+end
+
+-------------------------------------------------------------------------------
+-- Write a message to the given display field.
+-- @param f Display field.
+-- @param s String to write
+-- @param params Display parameters
+-- @local
+local function write(f, s, params)
+    if f and f.reg ~= nil then
+        if s then
+            local t = writeArgs(params)
+            local wait = t.wait
+            local clear = t.clear
+            local once = t.once or wait or clear
+            local time = math.max(t.time or 0.8, 0.2)
+
+            f.time = nil
+            s = tostring(s)
+            if s ~= f.current or clear or wait or once then
+                writeAuto(f, 0)
+                removeSlideTimer(f)
+                f.current = s
+                if f.format ~= nil then
+                    local function disp()
+                        private.writeRegHexAsync(f.reg, string.format(f.format, padDots(f.slideWords[f.slidePos])))
+                    end
+
+                    f.slideWords = splitWords(s, f.length)
+                    f.slidePos = 1
+                    disp()
+                    if #f.slideWords > 1 then
+                        f.time = t
+                        f.slideTimer = timers.addTimer(time, time, function()
+                            f.slidePos = private.addModBase1(f.slidePos, 1, #f.slideWords, true)
+                            if f.slidePos == 1 and once then
+                                removeSlideTimer(f)
+                                wait = false
+                                if clear then
+                                    write(f, '')
+                                end
+                            else
+                                disp()
+                            end
+                        end)
+                        time = nil
+                    elseif clear then
+                        f.slideTimer = timers.addTimer(0, time, write, f, '')
+                    end
+                else
+                    private.writeRegHexAsync(f.reg, s)
+                    if clear then
+                        f.slideTimer = timers.addTimer(0, time, write, f, '')
+                    end
+                end
+            end
+            if wait then
+                if time ~= nil then
+                    _M.app.delay(time)
+                else
+                    _M.app.delayUntil(function() return not wait end)
+                end
+            end
+        elseif f.auto == 0 then
+            writeAuto(f, f.saveAuto)
+        end
+    end
+end
+
+-------------------------------------------------------------------------------
+-- Write the specified units value to the specified display field
+-- @param f Display field
+-- @param v Unit value to write
+-- @local
+local function units(f, v)
+    if f and f.regUnits ~= nil and f.units ~= v then
+        private.writeReg(f.regUnits, v)
+        f.units = v
+    end
+end
+
+-------------------------------------------------------------------------------
+-- Apply a map to selected members of the display list
+-- @param p Predicate that selects which elements to act on
+-- @param f Function to apply
+-- @local
+local function map(p, f)
+    for _, v in pairs(display) do
+        if p(v) then f(v) end
+    end
 end
 
 -------------------------------------------------------------------------------
@@ -234,10 +440,12 @@ end
 -- device.writeBotLeft('fnord')
 -- device.restoreBot()
 function _M.saveBot()
-    saveBotLeft = curBotLeft
-    saveBotRight = curBotRight
-    saveBotUnits = curBotUnits
-    saveBotUnitsOther = curBotUnitsOther
+    map(function(v) return v.bottom end,
+        function(v)
+            f.saveCurrent = f.curent
+            f.saveTime = f.time
+            f.saveUnits = f.units
+        end)
 end
 
 -------------------------------------------------------------------------------
@@ -247,9 +455,11 @@ end
 -- device.writeBotLeft('fnord')
 -- device.restoreBot()
 function _M.restoreBot()
-    private.writeBotLeft(saveBotLeft)
-    private.writeBotRight(saveBotRight)
-    private.writeBotUnits(saveBotUnits, saveBotUnitsOther)
+    map(function(v) return v.bottom end,
+        function(v)
+            write(f, f.saveCurrent, f.saveTime)
+            units(f, f.saveUnits)
+        end)
 end
 
 -------------------------------------------------------------------------------
@@ -257,139 +467,56 @@ end
 -- @usage
 -- device.saveAutoLeft()
 function _M.saveAutoLeft()
-    saveAutoTopLeft = readAutoTopLeft()
-    saveAutoBotLeft = readAutoBotLeft()
+    map(function(v) return v.left end,
+        function(v) v.saveAuto = v.auto end)
 end
 
 -------------------------------------------------------------------------------
--- Shift the top left display section one position
--- @local
-local function slideTopLeft()
-    slideTopLeftPos = slideTopLeftPos + 1
-    if slideTopLeftPos > #slideTopLeftWords then
-       slideTopLeftPos = 1
-    end
-    private.writeRegHexAsync(REG_DISP_TOP_LEFT,
-         string.format('%-6s', padDots(slideTopLeftWords[slideTopLeftPos])))
-end
-
--------------------------------------------------------------------------------
--- Write string to Top Left of LCD, curTopLeft is set to s
+-- Write string to Top Left of LCD
 -- @function writeTopLeft
 -- @param s string to display
--- @param t delay in seconds between display of sections of a large message
+-- @param params displayControl parameter
+-- @see displayControl
 -- @usage
 -- device.writeTopLeft('HELLO WORLD', 0.6)
-writeTopLeft = private.exposeFunction('writeTopLeft', REG_DISP_TOP_LEFT, function(s, t)
-    t = math.max(t or 0.8, 0.2)
-
-    if s then
-        if s ~= curTopLeft then
-            writeAutoTopLeft(0)
-            curTopLeft = s
-            slideTopLeftWords = splitWords(s, 6)
-            slideTopLeftPos = 1
-            timers.removeTimer(slideTopLeftTimer)
-            private.writeRegHexAsync(REG_DISP_TOP_LEFT,
-                 string.format('%-6s', padDots(slideTopLeftWords[slideTopLeftPos])))
-            if #slideTopLeftWords > 1 then
-                slideTopLeftTimer = timers.addTimer(t, t, slideTopLeft)
-            end
-        end
-    elseif curAutoTopLeft == 0 then
-       writeAutoTopLeft(saveAutoTopLeft)
-    end
+private.exposeFunction('writeTopLeft', REG_DISP_TOP_LEFT, function(s, params)
+    write(display.tl, s, params)
 end)
 
 -------------------------------------------------------------------------------
--- Write string to Top Right of LCD, curTopRight is set to s
+-- Write string to Top Right of LCD
 -- @function writeTopRight
 -- @param s string to display
+-- @param params displayControl parameter
+-- @see displayControl
 -- @usage
 -- device.writeTopRight('ABCD')
-writeTopRight = private.exposeFunction('writeTopRight', REG_DISP_TOP_RIGHT, function(s)
-    if s and s ~= curTopRight then
-        private.writeRegHexAsync(REG_DISP_TOP_RIGHT, s)
-        curTopRight = s
-    end
+private.exposeFunction('writeTopRight', REG_DISP_TOP_RIGHT, function(s, params)
+    write(display.tr, s, params)
 end)
 
-
 -------------------------------------------------------------------------------
--- Shift the bottom left display section one position
--- @local
-local function slideBotLeft()
-    slideBotLeftPos = slideBotLeftPos + 1
-    if slideBotLeftPos > #slideBotLeftWords then
-       slideBotLeftPos = 1
-    end
-    private.writeRegHexAsync(REG_DISP_BOTTOM_LEFT,
-         string.format('%-9s', padDots(slideBotLeftWords[slideBotLeftPos])))
-end
-
--------------------------------------------------------------------------------
--- Write string to Bottom Left of LCD, curBotLeft is set to s
+-- Write string to Bottom Left of LCD
 -- @function writeBotLeft
 -- @param s string to display
--- @param t delay in seconds between display of sections of a large message
+-- @param params displayControl parameter
+-- @see displayControl
 -- @usage
 -- device.writeBotLeft('AARDVARK BOTHER HORSES')
-private.writeBotLeft = private.exposeFunction('writeBotLeft', REG_DISP_BOTTOM_LEFT, function(s, t)
-    t = math.max(t or 0.8, 0.2)
-
-    if s then
-        if s ~= curBotLeft then
-            writeAutoBotLeft(0)
-            curBotLeft = s
-            slideBotLeftWords = splitWords(s, 9)
-            slideBotLeftPos = 1
-            timers.removeTimer(slideBotLeftTimer)
-            private.writeRegHexAsync(REG_DISP_BOTTOM_LEFT,
-                 string.format('%-9s', padDots(slideBotLeftWords[slideBotLeftPos])))
-            if #slideBotLeftWords > 1 then
-                slideBotLeftTimer = timers.addTimer(t, t, slideBotLeft)
-            end
-        end
-    elseif curAutoBotLeft == 0 then
-       writeAutoBotLeft(saveAutoBotLeft)
-    end
+private.writeBotLeft = private.exposeFunction('writeBotLeft', REG_DISP_BOTTOM_LEFT, function(s, params)
+    write(display.bl, s, params)
 end)
 
 -------------------------------------------------------------------------------
--- Shift the bottom right display section one position
--- @local
-local function slideBotRight()
-    slideBotRightPos = slideBotRightPos + 1
-    if slideBotRightPos > #slideBotRightWords then
-       slideBotRightPos = 1
-    end
-    private.writeRegHexAsync(REG_DISP_BOTTOM_RIGHT,
-         string.format('%-8s',padDots(slideBotRightWords[slideBotRightPos])))
-end
-
--------------------------------------------------------------------------------
--- Write string to Bottom Right of LCD, curBotRight is set to s
+-- Write string to Bottom Right of LCD
 -- @function writeBotRight
 -- @param s string to display
--- @param t delay in seconds between display of sections of a large message
+-- @param params deldisplayControl parameterssage
+-- @see displayControl
 -- @usage
--- device.writeBotRight('AARDVARK BOTHER HORSES')
-private.writeBotRight = private.exposeFunction('writeBotRight', REG_DISP_BOTTOM_RIGHT, function(s, t)
-    t = math.max(t or 0.8, 0.2)
-
-    if s then
-        if s ~= curBotRight then
-            curBotRight = s
-            slideBotRightWords = splitWords(s,8)
-            slideBotRightPos = 1
-            timers.removeTimer(slideBotRightTimer)
-            private.writeRegHexAsync(REG_DISP_BOTTOM_RIGHT,
-                 string.format('%-8s',padDots(slideBotRightWords[slideBotRightPos])))
-            if #slideBotRightWords > 1 then
-                slideBotRightTimer = timers.addTimer(t, t, slideBotRight)
-            end
-        end
-    end
+-- device.writeBotRight('HORSES BOTHER AARDVARK')
+private.writeBotRight = private.exposeFunction('writeBotRight', REG_DISP_BOTTOM_RIGHT, function(s, params)
+    write(display.br, s, params)
 end)
 
 -----------------------------------------------------------------------------
@@ -411,7 +538,6 @@ end
 if REG_DISP_TOP_ANNUN == nil then
     writeTopAnnuns = function() end
 end
-    
 
 -----------------------------------------------------------------------------
 -- Link register address with Top annunciators to update automatically
@@ -420,7 +546,7 @@ end
 -- Set to 0 to enable direct control of the area.
 -- @usage
 -- device.writeAutoTopAnnun(0)
-writeAutoTopAnnun = private.exposeFunction('writeAutoTopAnnun', REG_DISP_AUTO_TOP_ANNUN, function(register)
+local writeAutoTopAnnun = private.exposeFunction('writeAutoTopAnnun', REG_DISP_AUTO_TOP_ANNUN, function(register)
     local r = private.getRegisterNumber(register)
     private.writeRegHexAsync(REG_DISP_AUTO_TOP_ANNUN, r)
 end)
@@ -432,16 +558,8 @@ end)
 -- Set to 0 to enable direct control of the area
 -- @usage
 -- device.writeAutoTopLeft('grossnet')
-writeAutoTopLeft = private.exposeFunction('writeAutoTopLeft', REG_DISP_AUTO_TOP_LEFT, function(register)
-    local reg = private.getRegisterNumber(register)
-
-    if reg ~= curAutoTopLeft then
-        timers.removeTimer(slideTopLeftTimer)
-        curTopLeft = nil
-        private.writeRegHexAsync(REG_DISP_AUTO_TOP_LEFT, reg)
-        saveAutoTopLeft = curAutoTopLeft
-        curAutoTopLeft = reg
-    end
+private.exposeFunction('writeAutoTopLeft', REG_DISP_AUTO_TOP_LEFT, function(register)
+    writeAuto(display.tl, register)
 end)
 
 -----------------------------------------------------------------------------
@@ -453,11 +571,8 @@ end)
 -- device.writeAutoTopLeft(0)
 -- ...
 -- device.writeAutoTopLeft(old)
-readAutoTopLeft = private.exposeFunction('readAutoTopLeft', REG_DISP_AUTO_TOP_LEFT, function()
-    local reg = private.readRegDec(REG_DISP_AUTO_TOP_LEFT)
-    reg = tonumber(reg)
-    curAutoTopLeft = reg
-    return private.getRegisterName(reg)
+private.exposeFunction('readAutoTopLeft', REG_DISP_AUTO_TOP_LEFT, function()
+    return readAuto(display.tl)
 end)
 
 -----------------------------------------------------------------------------
@@ -467,16 +582,8 @@ end)
 -- Set to 0 to enable direct control of the area
 -- @usage
 -- device.writeAutoBotLeft('grossnet')
-writeAutoBotLeft = private.exposeFunction('writeAutoBotLeft', REG_DISP_AUTO_BOTTOM_LEFT, function(register)
-    local reg = private.getRegisterNumber(register)
-
-    if reg ~= curAutoBotLeft then
-        timers.removeTimer(slideBotLeftTimer)
-        curBotLeft = nil
-        private.writeRegHexAsync(REG_DISP_AUTO_BOTTOM_LEFT, reg)
-        saveAutoBotLeft = curAutoBotLeft
-        curAutoBotLeft = reg
-    end
+private.exposeFunction('writeAutoBotLeft', REG_DISP_AUTO_BOTTOM_LEFT, function(register)
+    writeAuto(display.bl, register)
 end)
 
 -----------------------------------------------------------------------------
@@ -488,11 +595,8 @@ end)
 -- device.writeAutoBotLeft(0)
 -- ...
 -- device.writeAutoBotLeft(old)
-readAutoBotLeft = private.exposeFunction('readAutoBotLeft', REG_DISP_AUTO_BOTTOM_LEFT, function()
-    local reg = private.readRegDec(REG_DISP_AUTO_BOTTOM_LEFT)
-    reg = tonumber(reg)
-    curAutoBotLeft = reg
-    return private.getRegisterName(reg)
+private.exposeFunction('readAutoBotLeft', REG_DISP_AUTO_BOTTOM_LEFT, function()
+    return readAuto(display.bl)
 end)
 
 --- LCD Annunciators
@@ -600,6 +704,10 @@ local unitAnnunciators = {
 --- Additional modifiers on bottom display
 --@table Other
 -- @field none No annuciator selected (won't clear or set)
+-- @field hour Hour annunciator
+-- @field minute Minute annunciator
+-- @field second Second annunicator
+-- @field slash Slash line
 -- @field per_h Per hour annunciator
 -- @field per_m Per meter annunciator
 -- @field per_s Per second annuicator
@@ -611,7 +719,11 @@ local otherAunnuncitors = {
     per_m   = 0x11,
     per_s   = 0x12,
     percent = 0x30,     pc  = 0x30,
-    total   = 0x08,     tot = 0x08
+    total   = 0x08,     tot = 0x08,
+    second  = 0x02,     s = 0x02,
+    minute  = 0x01,     m = 0x01,
+    hour    = 0x04,     h = 0x04,
+    slash   = 0x10
 }
 
 -------------------------------------------------------------------------------
@@ -674,7 +786,7 @@ end
 -- @usage
 -- while true do
 --     device.rotWAIT(-1)
---     device.delay(0.7)
+--     rinApp.delay(0.7)
 -- end
 function _M.rotWAIT(dir)
     if dir ~= 0 then
@@ -690,30 +802,27 @@ end
 -------------------------------------------------------------------------------
 -- Set top units
 -- @function writeTopUnits
--- @param units Unit to display
+-- @param unts Unit to display
 -- @usage
 -- device.writeTopUnits('kg')
-writeTopUnits = private.exposeFunction('writeTopUnits', REG_DISP_TOP_UNITS, function(units)
-    local u = naming.convertNameToValue(units, unitAnnunciators, 0)
+private.exposeFunction('writeTopUnits', REG_DISP_TOP_UNITS, function(unts)
+    local u = naming.convertNameToValue(unts, unitAnnunciators, 0)
 
-    private.writeReg(REG_DISP_TOP_UNITS, u)
-    curTopUnits = u
+    units(display.tl, u)
 end)
 
 -------------------------------------------------------------------------------
 -- Set bottom units
 -- @function writeBotUnits
--- @param units Unit to display
+-- @param unts Unit to display
 -- @param other ('per_h', 'per_m', 'per_s', 'pc', 'tot')
 -- @usage
 -- device.writeBotUnits('oz', 'per_m')
-private.writeBotUnits = private.exposeFunction('writeBotUnits', REG_DISP_BOTTOM_UNITS, function(units, other)
-    local u = naming.convertNameToValue(units, unitAnnunciators, 0x00)
+private.writeBotUnits = private.exposeFunction('writeBotUnits', REG_DISP_BOTTOM_UNITS, function(unts, other)
+    local u = naming.convertNameToValue(unts, unitAnnunciators, 0x00)
     local o = naming.convertNameToValue(other, otherAunnuncitors, 0x00)
 
-    private.writeReg(REG_DISP_BOTTOM_UNITS, bit32.bor(bit32.lshift(o, 8), u))
-    curBotUnits = u
-    curBotUnitsOther = o
+    units(display.bl, bit32.bor(bit32.lshift(o, 8), u))
 end)
 
 -------------------------------------------------------------------------------
@@ -721,12 +830,11 @@ end)
 -- @usage
 -- device.restoreLcd()
 function _M.restoreLcd()
+    map(function(v) return true end, function(v) write(v, '') end)
+    writeAuto(display.tl, 'grossnet')
+    writeAuto(display.bl, 0)
+
     writeAutoTopAnnun(0)
-    writeAutoTopLeft('grossnet')
-    writeAutoBotLeft(0)
-    writeTopRight('')
-    private.writeBotLeft('')
-    private.writeBotRight('')
     writeBotAnnuns(0)
     private.writeBotUnits()
 end

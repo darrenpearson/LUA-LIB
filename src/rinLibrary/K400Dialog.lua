@@ -17,6 +17,7 @@ local table = table
 local bit32 = require "bit"
 local timers = require 'rinSystem.rinTimers.Pack'
 local system = require 'rinSystem.Pack'
+local dbg = require 'rinLibrary.rinDebug'
 
 -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -
 -- Submodule function begins here
@@ -122,10 +123,8 @@ end
 -- -- Program will pause operation immediately.
 -- device.displayMessageWait('unhappy', 1.5)
 function _M.displayMessageWait(msg, t, units, unitsOther)
-   _M.displayMessage(msg, t, units, unitsOther)
-   while msgDisp do
-       system.handleEvents()
-   end
+    _M.displayMessage(msg, t, units, unitsOther)
+    _M.app.delayUntil(function() return not mspDisp end)
 end
 
 -------------------------------------------------------------------------------
@@ -155,9 +154,9 @@ function _M.getKey(keyGroup, keep)
     end
 
     _M.startDialog()
-    while _M.dialogRunning() and _M.app.isRunning() and not getKeyState do
-        system.handleEvents()
-    end
+    _M.app.delayUntil(function()
+        return not _M.dialogRunning() or getKeyState
+    end)
     _M.abortDialog()
     private.restoreKeyCallbacks(saved)
 
@@ -558,7 +557,7 @@ function _M.editReg(register, prompt)
         if err or (data and tonumber(data,16) ~= reg) then
             break
         end
-        _M.delay(0.050)
+        _M.app.delay(0.050)
         if not _M.dialogRunning() or not _M.app.isRunning() then
             _M.sendKey('cancel', 'long')
         end
@@ -568,19 +567,6 @@ function _M.editReg(register, prompt)
         _M.restoreBot()
     end
     return private.readReg(reg)
-end
-
--------------------------------------------------------------------------------
--- Called to delay for t sec while keeping event handlers running
--- @param t delay time in sec
--- @usage
--- device.delay(0.1)    -- pause for 100 ms
-function _M.delay(t)
-    local delayWaiting = true
-    local tmr = timers.addTimer(0, t, function () delayWaiting = false end)
-    while delayWaiting do
-        system.handleEvents()
-    end
 end
 
 -------------------------------------------------------------------------------
@@ -732,6 +718,14 @@ end
 -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -
 -- Fill in all the deprecated fields
 deprecated.REG_EDIT_REG = REG_EDIT_REG
+local warnDelay = true
+deprecated.delay = function(t)
+    if warnDelay then
+        dbg.warn("K400:", "delay has been moved to rinApp")
+        warnDelay = false
+    end
+    _M.app.delay(t)
+end
 
 end
 

@@ -9,33 +9,6 @@ describe("CSV tests #csv", function()
     local csv = require "rinLibrary.rinCSV"
     local path = "tests/unit/"
 
-    -- test canonical form
-    describe("canonical form #canonical", function()
-        local canTests = {
-            { res = "",         val = "" },
-            { res = "",         val = " " },
-            { res = "",         val = "  " },
-            { res = "a",        val = "a" },
-            { res = "a",        val = " a" },
-            { res = "a",        val = "a " },
-            { res = "a",        val = " a " },
-            { res = "a",        val = "  a  " },
-            { res = "a b",      val = "a  b" },
-            { res = "ab cd",    val = "  ab cd  " },
-            { res = "ab cd",    val = "  ab   cd  " },
-            { res = "ab cd",    val = "ab    cd" },
-            { res = "a\000b",   val = " \t\r\n\f\va\000b \r\t\n\f\v" },
-            { res = "abc",      val = '  AbC  ' }
-        }
-
-        for i = 1, #canTests do
-            it("test "..i, function()
-                local r = canTests[i]
-                assert.equal(r.res, csv.canonical(r.val))
-            end)
-        end
-    end)
-
     -- test escapeCSV
     describe("escapeCSV #escapecsv", function()
         local escapeTests = {
@@ -390,6 +363,41 @@ describe("CSV tests #csv", function()
                 local n, row = csv.getLineCSV(r.t, r.v, r.c)
                 assert.equal(r.n, n)
                 assert.same(r.r, row)
+            end)
+        end
+    end)
+
+    -- test getRecordCSV
+    describe("getRecordCSV #getrecordcsv", function()
+        local getRecordCsvTests = {
+            { v = 1, c = 1,    r = { a=1, b=2 },    t = { labels = { "a", "b" }, data = { {1, 2}, {4, 3}, {5, 6} } } },
+            { v = 5, c = "a",  r = { a=5, b=6 },    t = { labels = { "a", "b" }, data = { {1, 2}, {5, 6} } } },
+            { v = 2, c = 2,    r = { a=1, b=2 },    t = { labels = { "a", "b" }, data = { {1, 2} } } },
+            { v = 6, c = "b",  r = { a=5, b=6 },    t = { labels = { "a", "b" }, data = { {1, 2}, {4, 3}, {5, 6} } } },
+        }
+
+        for i = 1, #getRecordCsvTests do
+            it("test "..i, function()
+                local r = getRecordCsvTests[i]
+                local row = csv.getRecordCSV(r.t, r.v, r.c)
+                assert.same(r.r, row)
+            end)
+        end
+    end)
+
+    -- test cleanCSV
+    describe("cleanCSV @cleancsv", function()
+        local cleanCsvTests = {
+            {   t = { labels = { 'a', ' AA ', ' B  B  C ' }, data = { { ' fNoRd ', 'aBC  def  GHi', 32 } } },
+                r = { labels = { 'a', 'aa', 'b b c' }, data = { { 'fnord', 'abc def ghi', 32 } } }
+            }
+        }
+
+        for i = 1, #cleanCsvTests do
+            it("test "..i, function()
+                local r = cleanCsvTests[i]
+                csv.cleanCSV(r.t)
+                assert.same(r.r, r.t)
             end)
         end
     end)

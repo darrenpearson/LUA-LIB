@@ -21,6 +21,7 @@ local P, V = lpeg.P, lpeg.V
 local system = require 'rinSystem.Pack'
 local socks = require "rinSystem.rinSockets.Pack"
 local timers = require 'rinSystem.rinTimers.Pack'
+local utils = require 'rinSystem.utilities'
 local ini = require "rinLibrary.rinINI"
 local usb = require "rinLibrary.rinUSB"
 local dbg = require "rinLibrary.rinDebug"
@@ -374,6 +375,33 @@ local function step()
 end
 if _TEST then
     _M.step = step
+end
+
+-------------------------------------------------------------------------------
+-- Delay until the specified condition occurs
+-- @param cond Condition function
+-- @usage
+-- rinApp.delayUntil(function() return finished end)
+function _M.delayUntil(cond)
+    if utils.callable(cond) then
+        while _M.isRunning() and not cond() do
+            system.handleEvents()
+        end
+    else
+        dbg.error('rinApp:', 'not a callable function for delayUntil')
+        local fatal fatal[nil] = nil
+    end
+end
+
+-------------------------------------------------------------------------------
+-- Called to delay for t sec while keeping event handlers running
+-- @param t delay time in sec
+-- @usage
+-- rinApp.delay(0.1)    -- pause for 100 ms
+function _M.delay(t)
+    local finished = false
+    local tmr = timers.addTimer(0, t, function () finished = true end)
+    _M.delayUntil(function() return finished end)
 end
 
 -------------------------------------------------------------------------------
