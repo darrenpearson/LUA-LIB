@@ -16,7 +16,7 @@ local powersOfTen   = require "rinLibrary.powersOfTen"
 local system        = require 'rinSystem.Pack'
 local dbg           = require "rinLibrary.rinDebug"
 local naming        = require 'rinLibrary.namings'
-local lpeg          = require 'lpeg'
+local lpeg          = require 'rinLibrary.lpeg'
 local system        = require 'rinSystem.Pack'
 
 -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -
@@ -152,7 +152,7 @@ end
 -------------------------------------------------------------------------------
 -- Called to load settings
 -- @local
-local function readSettings()
+function private.readSettings()
     settings.fullscale = private.readReg('fullscale')
     for mode = DISPMODE_PRIMARY, DISPMODE_SECONDARY do
         if settings.dispmode[mode].reg ~= 0 then
@@ -192,7 +192,7 @@ function _M.configure(model)
 
     dbg.info(instrumentModel, instrumentSerialNumber)
 
-    readSettings()
+    private.readSettings()
 
     private.exRegAsync(REG_COMMS_START)  -- clear start message
 
@@ -294,7 +294,7 @@ deprecated.REG_SOFTMODEL            = REG_SOFTMODEL
 deprecated.REG_SOFTVER              = REG_SOFTVER
 deprecated.REG_SERIALNO             = private.REG_SERIALNO
 
-deprecated.readSettings = readSettings
+deprecated.readSettings = private.readSettings
 deprecated.saveSettings = private.saveSettings
 deprecated.system = system
 deprecated.settings = settings

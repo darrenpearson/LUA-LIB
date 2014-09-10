@@ -38,7 +38,7 @@ describe("LCD #lcd", function ()
         end
     end)
 
-    describe("K422 missing registers", function()
+    describe("K422 non-longer missing registers", function()
         local m, p, d = {}, { deviceType = 'k422' }, {}
         require("rinLibrary.utilities")(m, p, d)
         require("rinLibrary.K400LCD")(m, p, d)
@@ -46,7 +46,7 @@ describe("LCD #lcd", function ()
         for k, v in pairs(dregs) do
             if v >= 16 then
                 it("test "..k, function()
-                    assert.is_nil(d["REG_" .. string.upper(k)])
+                    assert.is_not_nil(d["REG_" .. string.upper(k)])
                 end)
             end
         end
@@ -184,6 +184,26 @@ describe("LCD #lcd", function ()
 
     describe("splitWords", function()
         pending("unimplemented test case")
+    end)
+
+    describe("convertAnnunciatorBits", function()
+        local m = makeModule()
+        for i, r in pairs{
+            {   i = { },
+                r = { top=0, bottom=0, all=0, unknown=0 } },
+            {   i = { 'fnord', 'sigma', 'hold' },
+                r = { top=9, bottom=0, all=0, unknown=1 } },
+            {   i = { 'waitall', 'clock', 'zero', 'bal_segg' },
+                r = { top=0x4080, bottom=0x3C2, all=0, unknown=0 } },
+            {   i = { 'coz', 'all' },
+                r = { top=0x3FFFF, bottom=0x3ff, all=1, unknown=0 } },
+            {   i = { 'unknown', 'all' },
+                r = { top=0x3FFFF, bottom=0x3ff, all=1, unknown=1 } },
+        } do
+            it('test '..i, function()
+                assert.same(r.r, m.convertAnnunciatorBits(r.i))
+            end)
+        end
     end)
 end)
 

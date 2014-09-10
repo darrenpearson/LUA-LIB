@@ -208,13 +208,33 @@ describe("CSV tests #csv", function()
             { c = 0,    r = nil,            t = { labels = { "a", "b" }, data = { {1, 2} } } },
             { c = 0,    r = nil,            t = { labels = { "a", "b" } } },
             { c = 0,    r = nil,            t = { data = { {1, 2} } } },
-            { c = 0,    r = nil },
+            { c = 0,    r = nil }
         }
 
         for i = 1, #getColCsvTests do
             it("test "..i, function()
                 local r = getColCsvTests[i]
                 assert.same(r.r, csv.getColCSV(r.t, r.c))
+            end)
+        end
+    end)
+
+    -- test getColCSV
+    describe("getUniqueColCSV #getuniquecolcsv", function()
+        local getUniqueColCsvTests = {
+            { c = "a",  r = { 1, 4, 5 },    t = { labels = { "a", "b" }, data = { {1, 2}, {4, 3}, {5, 6} } } },
+            { c = "a",  r = { 1, 4 },       t = { labels = { "a", "b" }, data = { {1, 2}, {4, 3}, {1, 6} } } },
+            { c = "a",  r = {'A', 'b' },    t = { labels = { "a", "b" }, data = { {'A', 3}, {'b', 6 }, { 'a', 2 }, {'  a  ', 19 } } } },
+            { c = 'c',  r = nil,            t = { labels = { "a", "b" }, data = { {1, 2} } } },
+            { c = 0,    r = nil,            t = { labels = { "a", "b" }, data = { {1, 2} } } },
+            { c = 'a',  r = nil,            t = { labels = { "a", "b" } } },
+            { c = 0,    r = nil },
+        }
+
+        for i = 1, #getUniqueColCsvTests do
+            it("test "..i, function()
+                local r = getUniqueColCsvTests[i]
+                assert.same(r.r, csv.getUniqueColCSV(r.t, r.c))
             end)
         end
     end)
@@ -385,8 +405,31 @@ describe("CSV tests #csv", function()
         end
     end)
 
+    -- test selectCSV
+    describe("selectCSV #selectcsv", function()
+        local selectCsvTests = {
+            { v = 1, c = "a",   t = { }, r = nil },
+            { v = 1, c = "a",   t = { labels = { "a", "b" } },
+                                r = { labels = { "a", "b" } } },
+            { v = 1, c = "a",   t = { labels = { "a", "b" }, data = { {1, 2}, {5, 6}, {1, 3} } },
+                                r = { labels = { "a", "b" }, data = { {1, 2}, {1, 3} } } },
+            { v = 2, c = "a",   t = { labels = { "a", "b" }, data = { {1, 2}, {5, 6}, {1, 3} } },
+                                r = { labels = { "a", "b" }, data = { } } },
+            { v = 6, c = "b",   t = { labels = { "a", "b" }, data = { {1, 2}, {5, 6}, {1, 3} } },
+                                r = { labels = { "a", "b" }, data = { {5, 6} } } }
+        }
+
+        for i = 1, #selectCsvTests do
+            it("test "..i, function()
+                local r = selectCsvTests[i]
+                local row = csv.selectCSV(r.t, r.v, r.c)
+                assert.same(r.r, row)
+            end)
+        end
+    end)
+
     -- test cleanCSV
-    describe("cleanCSV @cleancsv", function()
+    describe("cleanCSV #cleancsv", function()
         local cleanCsvTests = {
             {   t = { labels = { 'a', ' AA ', ' B  B  C ' }, data = { { ' fNoRd ', 'aBC  def  GHi', 32 } } },
                 r = { labels = { 'a', 'aa', 'b b c' }, data = { { 'fnord', 'abc def ghi', 32 } } }
@@ -398,6 +441,28 @@ describe("CSV tests #csv", function()
                 local r = cleanCsvTests[i]
                 csv.cleanCSV(r.t)
                 assert.same(r.r, r.t)
+            end)
+        end
+    end)
+
+    -- test toTableCSV
+    describe("toTableCSV #totablecsv", function()
+        local toTableCSVTests = {
+            {   t = {}, r = nil },
+            {   t = { labels = { 'a', 'b' }, data = {} }, r = {} },
+            {   t = { labels = { 'a', 'b' }, data = { { 'd', 'e' }, { 'f', 'g' }, { 'x', 'y' } } },
+                r = { d = { a='d', b='e' }, f = { a='f', b='g' }, x = { a='x', b='y' } }
+            },
+            {   t = { labels = { 'b', 'a' }, data = { { 'd', 'e' }, { 'f', 'g' }, { 'x', 'y' } } },
+                r = { e = { b='d', a='e' }, g = { b='f', a='g' }, y = { b='x', a='y' } }
+            }
+        }
+
+        for i = 1, #toTableCSVTests do
+            it("test "..i, function()
+                local r = toTableCSVTests[i]
+                local z = csv.toTableCSV(r.t, 'a')
+                assert.same(r.r, z)
             end)
         end
     end)

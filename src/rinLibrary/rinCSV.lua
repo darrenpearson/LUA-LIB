@@ -15,25 +15,31 @@ local ipairs    = ipairs
 local tostring  = tostring
 local error     = error
 local xeq       = os.execute
+local rename    = os.rename
+local stat      = require('posix').stat
 
 local dbg       = require "rinLibrary.rinDebug"
 local canonical = require 'rinLibrary.canonicalisation'
+local deepcopy  = require 'rinLibrary.deepcopy'
 
 -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -
 -- LPEG pattern for parsing a CSV file
-local lpeg = require 'lpeg'
+local lpeg = require 'rinLibrary.lpeg'
 local C, Cs, Ct, P, S = lpeg.C, lpeg.Cs, lpeg.Ct, lpeg.P, lpeg.S
 
 local field = '"' * Cs(((P(1) - '"') + P'""' / '"')^0) * '"' +
                     C((1 - S',\r\n"')^0)
 local record = Ct(field * (',' * field)^0) * (S('\r\n')^1 + -1)
+local sizings = nil
 
 -------------------------------------------------------------------------------
 -- Takes an escaped CSV string and returns a line (1d array)
 -- @param s CSV string
 -- @return table (1d array)
--- @local
-function fromCSV(s)
+-- @usage
+-- local csv = require('rinLibrary.rinCSV')
+-- local fields = csv.fromCSV('1,"hello, there!",14')
+function _M.fromCSV(s)
     return record:match(s)
 end
 
@@ -80,7 +86,7 @@ end
 local function toCSV(t)
     local s = { }
     if t ~= nil then
-        for _,p in pairs(t) do
+        for _, p in pairs(t) do
             table.insert(s, ",")
             table.insert(s, escapeCSV(p))
         end
@@ -160,7 +166,7 @@ end
 -- @local
 local function appendrow(t, s)
     local f = io.open(t.fname, "a+")
-    writerow(f, line)
+    writerow(f, s)
     f:close()
     sync()
 end
@@ -236,8 +242,10 @@ function _M.saveCSV(t)
         dbg.error("saveCSV: ", string.format("unable to write %s", t.fname))
     else
         writerow(f, t.labels)
-        for _, row in ipairs(t.data) do
-            writerow(f, row)
+        if t.data ~= nil then
+            for _, row in ipairs(t.data) do
+                writerow(f, row)
+            end
         end
         f:close()
         sync()
@@ -285,7 +293,7 @@ function _M.loadCSV(t)
              res = "empty"
         else
             -- Check the labels are equal
-            local fieldnames = fromCSV(s)
+            local fieldnames = _M.fromCSV(s)
             if t.labels == nil then
                 t.labels = fieldnames
             end
@@ -294,7 +302,7 @@ function _M.loadCSV(t)
                 -- Clear the current table and read in the existing data
                 t.data = {}
                 for s in f:lines() do
-                    table.insert(t.data, fromCSV(s))
+                    table.insert(t.data, _M.fromCSV(s))
                 end
                 f:close()
                 res = "load"
@@ -306,7 +314,7 @@ function _M.loadCSV(t)
                 if n ~= 0 then
                     t.data = {}
                     for s in f:lines() do
-                        local fields = fromCSV(s)
+                        local fields = _M.fromCSV(s)
                         local row = {}
                         for i = 1, #fieldmap do
                             if fieldmap[i] == '' then
@@ -353,6 +361,43 @@ end
 -- @field immiscable File had no common fields, returned an empty CSV table
 
 -------------------------------------------------------------------------------
+-- Set the maximum log size before log cycling
+-- @param t CSV table
+-- @param s Maximum log file size, this can be a number or a sting that can
+-- include a suffix 'k' or 'm' for kilobytes and megabytes.
+-- @usage
+-- local csv = require('rinLibrary.rinCSV')
+-- csv.setLogSize(csvTable, 10000)
+function _M.setLogSize(t, s)
+    if t ~= nil then
+        if type(s) == 'string' then
+            if sizings == nil then
+                -- Only build this if required but cache it.
+                local r = lpeg.float
+                local function m(s, f)
+                    return r / function(s) return s*f end * (lpeg.Pi(s) / '')
+                end
+                sizings = Cs(m('k', 1024) + m('m', 1048576) + C(r))
+            end
+            s = sizings:match(s)
+        end
+
+        t.logMaxSize = math.max(s, 2 + #toCSV(t.labels))
+    end
+end
+
+-------------------------------------------------------------------------------
+-- Query the maximum log size before log cycling occurs
+-- @param t CSV table
+-- @return Log cycle size
+-- @usage
+-- local csv = require('rinLibrary.rinCSV')
+-- print('cycle size is ' .. csv.getLogSize(csvTable))
+function _M.getLogSize(t)
+    return t and t.logMaxSize or 100000
+end
+
+-------------------------------------------------------------------------------
 -- Adds line of data to a CSV file but does not update local data in table
 -- @param t is table describing CSV data
 -- @param line is a row of data (1d array) to save
@@ -370,6 +415,15 @@ function _M.logLineCSV(t, line)
             dbg.error("logLineCSV: ", "failed due to format incompatibility, try saveCSV first")
         else
             appendrow(t, line)
+
+            if stat(t.fname, 'size') > _M.getLogSize(t) then
+                for i = 9, 1, -1 do
+                    rename(t.fname .. '.' .. (i-1), t.fname .. '.' .. i)
+                end
+                rename(t.fname, t.fname .. '.0')
+                _M.saveCSV(t)
+            end
+            t.data = nil
         end
     end
 end
@@ -470,6 +524,7 @@ end
 -- @param col is the column of data to match (default is col 1)
 -- @return row that val found in or nil if not found
 -- @return line of data found at that row with matching val data in column col
+-- @see getRecordCSV
 -- @usage
 -- local csv = require('rinLibrary.rinCSV')
 -- local csvfile = { fname = '/tmp/temporary-file' }
@@ -481,11 +536,13 @@ end
 -- print('3.14159 is in the third column in row '..row)
 -- print('That row is: ' .. csv.tostringLine(data))
 function _M.getLineCSV(t, val, col)
-    col = lookupColumn(t, col)
-    val = canonical(val)
-    for k, v in ipairs(t.data) do
-        if canonical(v[col]) == val then
-            return k, v
+    if hasData(t) then
+        col = lookupColumn(t, col)
+        val = canonical(val)
+        for k, v in ipairs(t.data) do
+            if canonical(v[col]) == val then
+                return k, v
+            end
         end
     end
     return nil, nil
@@ -498,6 +555,7 @@ end
 -- @param val is value of the cell to find
 -- @param col is the column of data to match (default is col 1)
 -- @return table containing the fields index by their canonical names
+-- @see getLineCSV
 -- @usage
 -- local csv = require('rinLibrary.rinCSV')
 -- local csvfile = { fname = '/tmp/temporary-file', labels = { 'a', 'b', 'c' } }
@@ -512,12 +570,40 @@ function _M.getRecordCSV(t, val, col)
         local ret, line = {}
 
         _, line = _M.getLineCSV(t, val, col)
-        for i = 1, #t.labels do
+        for i = 1, _M.numColsCSV(t) do
             ret[canonical(t.labels[i])] = line[i]
         end
         return ret
     end
     return nil
+end
+
+-------------------------------------------------------------------------------
+-- Return a new CSV file that includes all records matching the given field
+-- value.
+-- @param t table holding CSV data
+-- @param val value to match against
+-- @param col column to match
+-- @see getRecordCSV
+-- @usage
+-- local csv = require('rinLibrary.rinCSV')
+-- local newTable = csv.selectCSV(oldTable, 'fred', 'name')
+function _M.selectCSV(t, val, col)
+    if not isCSV(t) then
+        return nil
+    end
+    col = lookupColumn(t, col)
+    val = canonical(val)
+    local r = { labels = deepcopy(t.labels) }
+    if hasData(t) then
+        r.data = {}
+        for k, v in ipairs(t.data) do
+            if canonical(v[col]) == val then
+                table.insert(r.data, v)
+            end
+        end
+    end
+    return r
 end
 
 -------------------------------------------------------------------------------
@@ -533,7 +619,7 @@ end
 --
 -- -- alternatively, columns can be specified numerically:
 --
--- names = csv.getColCSV(db.material, 2)                    -- gather all material names
+-- names = csv.getColCSV(db.material, 'material')           -- gather all material names
 -- sel = dwi.selectOption('SELECT', names, names[1], true)  -- chose a material
 function _M.getColCSV(csvtbl, col)
     local column = {}
@@ -550,6 +636,44 @@ function _M.getColCSV(csvtbl, col)
 end
 
 -------------------------------------------------------------------------------
+-- Returns the unique different values from a column of data in a 1-D table
+-- @param csvtbl is table holding CSV data
+-- @param col is the column of data to match (default is col 1), column names are allowed
+-- @return a column of data
+-- @usage
+-- local csv = require('rinLibrary.rinCSV')
+--
+-- names = csv.getColCSV(db.material, 'material')                       -- gather all material names
+-- sel = dwi.selectOption('SELECT', names, names[1], true)              -- chose a material
+--
+-- -- alternatively, columns can be specified numerically:
+--
+-- uniqueNames = csv.getUniqueColCSV(db.material, 'material')           -- gather all material names
+-- sel = dwi.selectOption('SELECT', uniqueNames, uniqueNames[1], true)  -- chose a material
+function _M.getUniqueColCSV(csvtbl, col)
+    local c = _M.getColCSV(csvtbl, col)
+    if c == nil then
+        return nil
+    elseif #c < 2 then
+        return c
+    end
+
+    local s, r = {}, {}
+    for _, v in ipairs(c) do
+        table.insert(s, { o = v, k = canonical(v) })
+    end
+    table.sort(s, function(a, b) return a.k < b.k end)
+    local i, prev = 0
+    for _, v in ipairs(s) do
+        if v.k ~= prev then
+            prev = v.k
+            table.insert(r, v.o)
+        end
+    end
+    return r
+end
+
+-------------------------------------------------------------------------------
 -- Clean up a CSV table converting all field names and string fields into
 -- a canonical form.
 -- @param t CSV table to convert
@@ -562,11 +686,11 @@ end
 -- csv.saveCSV(csvfile)
 function _M.cleanCSV(t)
     if isCSV(t) then
-        local d = hasData(t)
-        for i = 1, #t.labels do
+        local d, rowCount = hasData(t), _M.numRowsCSV(t)
+        for i = 1, _M.numColsCSV(t) do
             t.labels[i] = canonical(t.labels[i])
             if d then
-                for j = 1, #t.data do
+                for j = 1, rowCount do
                     if type(t.data[j][i]) == 'string' then
                         t.data[j][i] = canonical(t.data[j][i])
                     end
@@ -574,6 +698,41 @@ function _M.cleanCSV(t)
             end
         end
     end
+end
+
+-------------------------------------------------------------------------------
+-- Convert a CSV file into a table indexed by the specified column names.
+-- No uniqueness checks are performed for the key field.
+-- @param csvtbl CSV table to extract
+-- @param column Column name for the key field
+-- @return Table containing the rows indexed by the key field.  Each row is
+-- indexed by the label names not the label numbers.
+-- @usage
+-- local csv = require('rinLibrary.rinCSV')
+--
+-- local t = csv.toTableCSV(csvTable, 'truck')
+-- print('The big red truck's tare is: ' .. t.bigred.tare)
+function _M.toTableCSV(csvtbl, column)
+    if hasData(csvtbl) then
+        local c = lookupColumn(csvtbl, column)
+        local r, l = {}, {}
+
+        for i = 1, _M.numColsCSV(csvtbl) do
+            l[i] = canonical(csvtbl.labels[i])
+        end
+
+        for _, v in ipairs(csvtbl.data) do
+            local z = {}
+            r[canonical(v[c])] = z
+            for i = 1, #l do
+                z[l[i]] = v[i]
+            end
+        end
+        return r
+    elseif isCSV(csvtbl) then
+        return {}
+    end
+    return nil
 end
 
 -------------------------------------------------------------------------------
@@ -633,7 +792,7 @@ end
 --
 -- csv.loadCSV(csvfile)
 -- print(csv.tostringCSV(csvtile))
-function _M.tostringCSV(t,w)
+function _M.tostringCSV(t, w)
     local csvtab = {}
     local w = w or 10
 
@@ -855,7 +1014,6 @@ end
 if _TEST then
     _M.equalCSV = equalCSV
     _M.escapeCSV = escapeCSV
-    _M.fromCSV = fromCSV
     _M.padCSV = padCSV
     _M.toCSV = toCSV
 end

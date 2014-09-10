@@ -16,20 +16,19 @@ local dbg = require "rinLibrary.rinDebug"
 local system = require "rinSystem.Pack"
 local deepcopy = require 'rinLibrary.deepcopy'
 
-local lpeg = require 'lpeg'
-local C, Cg, Cs, Ct, P, R, S, V = lpeg.C, lpeg.Cg, lpeg.Cs, lpeg.Ct, lpeg.P, lpeg.R, lpeg.S, lpeg.V
+local lpeg = require 'rinLibrary.lpeg'
+local C, Cg, Cs, Ct = lpeg.C, lpeg.Cg, lpeg.Cs, lpeg.Ct
+local P, Pi, R, S, V, spc = lpeg.P, lpeg.Pi, lpeg.R, lpeg.S, lpeg.V, lpeg.space
 local sdot = P'.'
 local scdot = (1 - sdot) * sdot^-1
 
 -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -
 -- Define a pattern to match the display options and produce an option table.
-local digits, mpm = R'09'^1, S'+-'^-1
-local float = mpm * (digits * (P'.'*R'09'^0)^-1 + P'.'*digits) * (S'eE'*mpm*digits)^-1
-local function boolArg(s) return Cg(P(s), s) end
+local function boolArg(s) return Cg(Pi(s), s) end
 local writeArgPat = P{
-            Ct((V'opt' * (S', '^1 * V'opt')^0)^-1) * P(-1),
+            spc^0 * Ct((V'opt' * ((spc + P',')^1 * V'opt')^0)^-1) * spc^0 * P(-1),
     opt =   V'time' + boolArg'clear' + boolArg'wait' + boolArg'once',
-    time =  P'time=' * Cg(float / tonumber, 'time')
+    time =  (Pi'time' * spc^0 * P'=' *spc^0)^-1 * Cg(lpeg.float / tonumber, 'time')
 }
 
 -------------------------------------------------------------------------------
@@ -143,16 +142,16 @@ return function (_M, private, deprecated)
 local REG_LCDMODE              = 0x000D
 local REG_DISP_BOTTOM_LEFT     = 0x000E    -- Takes string
 local REG_DISP_BOTTOM_RIGHT    = 0x000F    -- Takes string
-local REG_DISP_TOP_LEFT        = private.valueByDevice{ k422='nil', default=0x00B0 }    -- Takes string
-local REG_DISP_TOP_RIGHT       = private.valueByDevice{ k422='nil', default=0x00B1 }    -- Takes string
-local REG_DISP_TOP_ANNUN       = private.valueByDevice{ k422='nil', default=0x00B2 }
-local REG_DISP_TOP_UNITS       = private.valueByDevice{ k422='nil', default=0x00B3 }    -- Takes string
-local REG_DISP_BOTTOM_ANNUN    = private.valueByDevice{ k422='nil', default=0x00B4 }
-local REG_DISP_BOTTOM_UNITS    = private.valueByDevice{ k422='nil', default=0x00B5 }
+local REG_DISP_TOP_LEFT        = 0x00B0    -- Takes string
+local REG_DISP_TOP_RIGHT       = 0x00B1    -- Takes string
+local REG_DISP_TOP_ANNUN       = 0x00B2
+local REG_DISP_TOP_UNITS       = 0x00B3    -- Takes string
+local REG_DISP_BOTTOM_ANNUN    = 0x00B4
+local REG_DISP_BOTTOM_UNITS    = 0x00B5
 
-local REG_DISP_AUTO_TOP_ANNUN  = private.valueByDevice{ k422='nil', default=0x00B6 }    -- Register
-local REG_DISP_AUTO_TOP_LEFT   = private.valueByDevice{ k422='nil', default=0x00B7 }    -- Register
-local REG_DISP_AUTO_BOTTOM_LEFT= private.valueByDevice{ k422='nil', default=0x00B8 }    -- Register
+local REG_DISP_AUTO_TOP_ANNUN  = 0x00B6    -- Register
+local REG_DISP_AUTO_TOP_LEFT   = 0x00B7    -- Register
+local REG_DISP_AUTO_BOTTOM_LEFT= 0x00B8    -- Register
 
 --local REG_DEFAULTMODE          = 0x0166
 
@@ -161,7 +160,7 @@ local topAnnunState = 0
 local waitPos = 1
 
 local display = {
-    tl = {
+    topleft = {
         top = true, left = true,
         length = 6,
         reg = REG_DISP_TOP_LEFT,
@@ -172,24 +171,24 @@ local display = {
         auto = nil,     saveAuto = 0
     },
     
-    tr = {
+    topright = {
         top = true, right = true,
         length = 4,
         reg = REG_DISP_TOP_RIGHT,
     },
 
-    bl = {
+    bottomleft = {
         bottom = true,  left = true,
-        length = 8,
+        length = 9,
         reg = REG_DISP_BOTTOM_LEFT,
         regUnits = REG_DISP_BOTTOM_UNITS,
         regAuto = REG_DISP_AUTO_BOTTOM_LEFT,
-        format = '%-8s',
+        format = '%-9s',
         units = nil,    saveUnits = 0,
         auto = nil,     saveAuto = 0
     },
 
-    br = {
+    bottomright = {
         bottom = true,  right = true,
         length = 8,
         reg = REG_DISP_BOTTOM_RIGHT,
@@ -210,7 +209,8 @@ local display = {
 -- The this parameter is a string, it is considered to be a space or comma separated list
 -- of values.  For example, the string <i>"time=2, once, clear"</i>
 -- specified a two second display between elements, clear the field after wards and only display
--- the message once.
+-- the message once.  For the <i>time</i> parameter, the <i>time=</i> can be omitted.  Thus,
+-- "once 2 clear" has the same meaning as the previous example.
 --
 -- If this parameter is a table, it contains a number of fields which fine tune
 -- the display behaviour.  These fields are described below.
@@ -293,7 +293,9 @@ end
 -- @return Register name
 -- @local
 local function readAuto(f)
-    if f.regAuto == nil then return nil end
+    if f == nil or f.regAuto == nil then
+        return nil
+    end
     local reg = private.readRegDec(f.regAuto)
     reg = tonumber(reg)
     f.auto = reg
@@ -306,14 +308,16 @@ end
 -- @param register Register name
 -- @local
 local function writeAuto(f, register)
-    local reg = private.getRegisterNumber(register)
+    if f ~= nil and register ~= nil then
+        local reg = private.getRegisterNumber(register)
 
-    if f.regAuto ~= nil and reg ~= f.auto then
-        removeSlideTimer(f)
-        f.current = nil
-        private.writeRegHexAsync(f.regAuto, reg)
-        f.saveAuto = f.auto
-        f.auto = reg
+        if f.regAuto ~= nil and reg ~= f.auto then
+            removeSlideTimer(f)
+            f.current = nil
+            private.writeRegHexAsync(f.regAuto, reg)
+            f.saveAuto = f.auto
+            f.auto = reg
+        end
     end
 end
 
@@ -442,9 +446,9 @@ end
 function _M.saveBot()
     map(function(v) return v.bottom end,
         function(v)
-            f.saveCurrent = f.curent
-            f.saveTime = f.time
-            f.saveUnits = f.units
+            v.saveCurrent = v.current
+            v.saveTime = v.time
+            v.saveUnits = v.units
         end)
 end
 
@@ -457,8 +461,8 @@ end
 function _M.restoreBot()
     map(function(v) return v.bottom end,
         function(v)
-            write(f, f.saveCurrent, f.saveTime)
-            units(f, f.saveUnits)
+            write(v, v.saveCurrent, v.saveTime)
+            units(v, v.saveUnits)
         end)
 end
 
@@ -472,52 +476,148 @@ function _M.saveAutoLeft()
 end
 
 -------------------------------------------------------------------------------
--- Write string to Top Left of LCD
+-- Write string to thsi specified display section
+-- @param where which display section to write to
+-- @param s string to display
+-- @param params displayControl parameter
+-- @see displayControl
+-- @usage
+-- device.write('TopLeft', 'HELLO WORLD', 0.6)
+function _M.write(where, s, params)
+    write(naming.convertNameToValue(where, display), s, params)
+end
+
+-----------------------------------------------------------------------------
+-- Link register address with display field to update automatically.
+-- Not all fields support this functionality.
+-- @param where which display section to write to
+-- @param register address of register to link display to.
+-- Set to 0 to enable direct control of the area
+-- @usage
+-- device.writeAutoTopLeft('grossnet')
+function _M.writeAuto(where, register)
+    return writeAuto(naming.convertNameToValue(where, display), register)
+end
+
+-----------------------------------------------------------------------------
+-- Reads the current auto update register for the specified field
+-- @return register that is being used for auto update, 0 if none
+-- @usage
+-- local old = device.readAutoTopLeft()
+-- device.writeAutoTopLeft(0)
+-- ...
+-- device.writeAutoTopLeft(old)
+function _M.readAuto(where)
+    return readAuto(naming.convertNameToValue(where, display))
+end
+
+-------------------------------------------------------------------------------
+-- Write string to Top Left of LCD.  The write interface is preferred.
 -- @function writeTopLeft
 -- @param s string to display
 -- @param params displayControl parameter
+-- @see write
 -- @see displayControl
 -- @usage
 -- device.writeTopLeft('HELLO WORLD', 0.6)
-private.exposeFunction('writeTopLeft', REG_DISP_TOP_LEFT, function(s, params)
-    write(display.tl, s, params)
-end)
+function _M.writeTopLeft(s, params)
+    return _M.write('topleft', s, params)
+end
 
 -------------------------------------------------------------------------------
--- Write string to Top Right of LCD
+-- Write string to Top Right of LCD.  The write interface is preferred.
 -- @function writeTopRight
 -- @param s string to display
 -- @param params displayControl parameter
+-- @see write
 -- @see displayControl
 -- @usage
 -- device.writeTopRight('ABCD')
-private.exposeFunction('writeTopRight', REG_DISP_TOP_RIGHT, function(s, params)
-    write(display.tr, s, params)
-end)
+function _M.writeTopRight(s, params)
+    return _M.write('topright', s, params)
+end
 
 -------------------------------------------------------------------------------
--- Write string to Bottom Left of LCD
+-- Write string to Bottom Left of LCD.  The write interface is preferred.
 -- @function writeBotLeft
 -- @param s string to display
 -- @param params displayControl parameter
+-- @see write
 -- @see displayControl
 -- @usage
 -- device.writeBotLeft('AARDVARK BOTHER HORSES')
-private.writeBotLeft = private.exposeFunction('writeBotLeft', REG_DISP_BOTTOM_LEFT, function(s, params)
-    write(display.bl, s, params)
-end)
+function _M.writeBotLeft(s, params)
+    return _M.write('bottomleft', s, params)
+end
 
 -------------------------------------------------------------------------------
--- Write string to Bottom Right of LCD
+-- Write string to Bottom Right of LCD.  The write interface is preferred.
 -- @function writeBotRight
 -- @param s string to display
 -- @param params deldisplayControl parameterssage
+-- @see write
 -- @see displayControl
 -- @usage
 -- device.writeBotRight('HORSES BOTHER AARDVARK')
-private.writeBotRight = private.exposeFunction('writeBotRight', REG_DISP_BOTTOM_RIGHT, function(s, params)
-    write(display.br, s, params)
-end)
+function _M.writeBotRight(s, params)
+    return _M.write('bottomright', s, params)
+end
+
+-----------------------------------------------------------------------------
+-- Link register address with Top Left display to update automatically.
+-- The writeAuto interface is preferred.
+-- @function writeAutoTopLeft
+-- @param register address of register to link Top Left display to.
+-- Set to 0 to enable direct control of the area
+-- @see writeAuto
+-- @usage
+-- device.writeAutoTopLeft('grossnet')
+function _M.writeAutoTopLeft(param)
+    return _M.writeAuto('topLeft', param)
+end
+
+-----------------------------------------------------------------------------
+-- Reads the current Top Left auto update register
+-- The readAuto interface is preferred.
+-- @function readAutoTopLeft
+-- @return register that is being used for auto update, 0 if none
+-- @see readAuto
+-- @usage
+-- local old = device.readAutoTopLeft()
+-- device.writeAutoTopLeft(0)
+-- ...
+-- device.writeAutoTopLeft(old)
+function _M.readAutoTopLeft()
+    return _M.readAuto('topLeft')
+end
+
+-----------------------------------------------------------------------------
+-- Link register address with Bottom Left display to update automatically
+-- The writeAuto interface is preferred.
+-- @function writeAutoBotLeft
+-- @param register address of register to link Bottom Left display to.
+-- Set to 0 to enable direct control of the area
+-- @see writeAuto
+-- @usage
+-- device.writeAutoBotLeft('grossnet')
+function _M.writeAutoBotLeft(param)
+    return _M.writeAuto('bottomLeft', param)
+end
+
+-----------------------------------------------------------------------------
+-- Reads the current Bottom Left auto update register
+-- The readAuto interface is preferred.
+-- @function readAutoBotLeft
+-- @return register that is being used for auto update, 0 if none
+-- @see readAuto
+-- @usage
+-- local old = device.readAutoBotLeft()
+-- device.writeAutoBotLeft(0)
+-- ...
+-- device.writeAutoBotLeft(old)
+function _M.readAutoBotLeft()
+    return _M.readAuto('bottomLeft')
+end
 
 -----------------------------------------------------------------------------
 -- Set the bottom annunciators directly.
@@ -549,54 +649,6 @@ end
 local writeAutoTopAnnun = private.exposeFunction('writeAutoTopAnnun', REG_DISP_AUTO_TOP_ANNUN, function(register)
     local r = private.getRegisterNumber(register)
     private.writeRegHexAsync(REG_DISP_AUTO_TOP_ANNUN, r)
-end)
-
------------------------------------------------------------------------------
--- Link register address with Top Left display to update automatically
--- @function writeAutoTopLeft
--- @param register address of register to link Top Left display to.
--- Set to 0 to enable direct control of the area
--- @usage
--- device.writeAutoTopLeft('grossnet')
-private.exposeFunction('writeAutoTopLeft', REG_DISP_AUTO_TOP_LEFT, function(register)
-    writeAuto(display.tl, register)
-end)
-
------------------------------------------------------------------------------
--- Reads the current Top Left auto update register
--- @function readAutoTopLeft
--- @return register that is being used for auto update, 0 if none
--- @usage
--- local old = device.readAutoTopLeft()
--- device.writeAutoTopLeft(0)
--- ...
--- device.writeAutoTopLeft(old)
-private.exposeFunction('readAutoTopLeft', REG_DISP_AUTO_TOP_LEFT, function()
-    return readAuto(display.tl)
-end)
-
------------------------------------------------------------------------------
--- Link register address with Bottom Left display to update automatically
--- @function writeAutoBotLeft
--- @param register address of register to link Bottom Left display to.
--- Set to 0 to enable direct control of the area
--- @usage
--- device.writeAutoBotLeft('grossnet')
-private.exposeFunction('writeAutoBotLeft', REG_DISP_AUTO_BOTTOM_LEFT, function(register)
-    writeAuto(display.bl, register)
-end)
-
------------------------------------------------------------------------------
--- Reads the current Bottom Left auto update register
--- @function readAutoBotLeft
--- @return register that is being used for auto update, 0 if none
--- @usage
--- local old = device.readAutoBotLeft()
--- device.writeAutoBotLeft(0)
--- ...
--- device.writeAutoBotLeft(old)
-private.exposeFunction('readAutoBotLeft', REG_DISP_AUTO_BOTTOM_LEFT, function()
-    return readAuto(display.bl)
 end)
 
 --- LCD Annunciators
@@ -632,6 +684,7 @@ end)
 -- @field wait90 (bottom)
 -- @field wait135 (bottom)
 -- @field waitall (bottom)
+-- @field all All annunciators top and bottom
 
 -- REG_DISP_BOTTOM_ANNUN BIT SETTINGS
 local WAIT      = 0x0040
@@ -672,7 +725,8 @@ local annunciatorMap = {
     wait45          = { v=WAIT45,   locn='bottom' },
     wait90          = { v=WAIT90,   locn='bottom' },
     wait135         = { v=WAIT135,  locn='bottom' },
-    waitall         = { v=WAITALL,  locn='bottom' }
+    waitall         = { v=WAITALL,  locn='bottom' },
+    all             = { v=1,        locn='all'  }
 }
 --- Main Units
 --@table Units
@@ -732,12 +786,22 @@ local otherAunnuncitors = {
 -- @return table of bit mask values for 'top' and 'bottom'
 -- @local
 local function convertAnnunciatorBits(l)
-    local res = { top = 0, bottom = 0, unknown = 0 }
+    local res = { top = 0, bottom = 0, unknown = 0, all = 0 }
     local missing = { v=1, locn='unknown' }
 
     for _, v in pairs(l) do
         local bit = naming.convertNameToValue(v, annunciatorMap, missing)
         res[bit.locn] = bit32.bor(res[bit.locn], bit.v)
+    end
+    if res.all ~= 0 then
+        for k, _ in pairs(res) do
+            local a = 0
+            for b, v in pairs(annunciatorMap) do
+                if k == v.locn then
+                    res[k] = bit32.bor(res[k], v.v)
+                end
+            end
+        end
     end
     return res
 end
@@ -800,30 +864,41 @@ function _M.rotWAIT(dir)
 end
 
 -------------------------------------------------------------------------------
--- Set top units
--- @function writeTopUnits
--- @param unts Unit to display
--- @usage
--- device.writeTopUnits('kg')
-private.exposeFunction('writeTopUnits', REG_DISP_TOP_UNITS, function(unts)
-    local u = naming.convertNameToValue(unts, unitAnnunciators, 0)
-
-    units(display.tl, u)
-end)
-
--------------------------------------------------------------------------------
--- Set bottom units
--- @function writeBotUnits
+-- Set units for specified field.
+-- The other field isn't always supported.  Likewise, not all fields have units.
+-- @param where which display section to write to
 -- @param unts Unit to display
 -- @param other ('per_h', 'per_m', 'per_s', 'pc', 'tot')
 -- @usage
--- device.writeBotUnits('oz', 'per_m')
-private.writeBotUnits = private.exposeFunction('writeBotUnits', REG_DISP_BOTTOM_UNITS, function(unts, other)
+-- device.writeUnits('topLeft', 'kg')
+function _M.writeUnits(where, unts, other)
     local u = naming.convertNameToValue(unts, unitAnnunciators, 0x00)
     local o = naming.convertNameToValue(other, otherAunnuncitors, 0x00)
+    local v = bit32.bor(bit32.lshift(o, 8), u)
 
-    units(display.bl, bit32.bor(bit32.lshift(o, 8), u))
-end)
+    return units(naming.convertNameToValue(where, display), v)
+end
+
+-------------------------------------------------------------------------------
+-- Set top units.  The writeUnits interface is preferred.
+-- @param unts Unit to display
+-- @see writeUnits
+-- @usage
+-- device.writeTopUnits('kg')
+function _M.writeTopUnits(unts)
+    return _M.writeUnits('topLeft', unts)
+end
+
+-------------------------------------------------------------------------------
+-- Set bottom units.  The writeUnits interface is preferred.
+-- @param unts Unit to display
+-- @param other ('per_h', 'per_m', 'per_s', 'pc', 'tot')
+-- @see writeUnits
+-- @usage
+-- device.writeBotUnits('oz', 'per_m')
+function _M.writeBotUnits(unts, other)
+    return _M.writeUnits('bottomLeft', unts, other)
+end
 
 -------------------------------------------------------------------------------
 -- Called to restore the LCD to its default state
@@ -831,12 +906,12 @@ end)
 -- device.restoreLcd()
 function _M.restoreLcd()
     map(function(v) return true end, function(v) write(v, '') end)
-    writeAuto(display.tl, 'grossnet')
-    writeAuto(display.bl, 0)
+    writeAuto(display.topleft, 'grossnet')
+    writeAuto(display.bottomright, 0)
 
     writeAutoTopAnnun(0)
     writeBotAnnuns(0)
-    private.writeBotUnits()
+    _M.writeUnits('bottomLeft')
 end
 
 -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -
@@ -920,6 +995,7 @@ if _TEST then
     _M.strSubR400 = strSubR400
     _M.padDots    = padDots
     _M.splitWords = splitWords
+    _M.convertAnnunciatorBits = convertAnnunciatorBits
 end
 
 end
