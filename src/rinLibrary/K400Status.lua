@@ -14,6 +14,7 @@ local system = require 'rinSystem.Pack'
 local dbg = require "rinLibrary.rinDebug"
 local naming = require 'rinLibrary.namings'
 local utils = require 'rinSystem.utilities'
+local timers = require 'rinSystem.rinTimers.Pack'
 
 -------------------------------------------------------------------------------
 -- Function to test if any of the specified bits are set in the data.
@@ -894,10 +895,28 @@ end
 -- @param active Active?
 -- @local
 local function handleINIT(status, active)
-    dbg.info('INIT', status, active)
     if active then
-        private.readSettings()
-        private.RTCread('all')
+        timers.addEvent(function()
+            dbg.info('Event:', 'INIT')
+            private.readSettings()
+            private.RTCread('all')
+        end)
+    end
+end
+
+-------------------------------------------------------------------------------
+-- Handle the power off key being held down.  This doesn't mean we can exit
+-- since the operation can be cancelled.  It does mean we should prepair as
+-- best we can for a loss of power.
+--
+-- Specifically, we write everything outstanding to disc/flash.
+-- @param status Status
+-- @param active Active?
+-- @local
+local function handlePowerOff(status, active)
+    if active then
+        dbg.info('Event:', 'Power Off')
+        os.execute('sync')
     end
 end
 
@@ -927,6 +946,7 @@ function _M.setupStatus()
     private.RTCread('all')
     setEStatusMainCallback('rtc',  handleRTC)
     setEStatusMainCallback('init', handleINIT)
+    setEStatusMainCallback('power_off', handlePowerOff)
     writeRTCStatus(true)
 end
 
@@ -939,6 +959,7 @@ function _M.endStatus()
     writeRTCStatus(false)
     setEStatusMainCallback('rtc',  nil)
     setEStatusMainCallback('init', nil)
+    setEStatusMainCallback('power_off', nil)
     _M.removeStream(statID)     statID = nil
     _M.removeStream(eStatID)    eStatID = nil
     _M.endIOStatus()

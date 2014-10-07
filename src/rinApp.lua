@@ -62,6 +62,7 @@ local bidirectionalSocket = nil
 
 local userMainLoop = nil
 local userCleanup = nil
+local userEvents = {}
 
 -------------------------------------------------------------------------------
 -- Check if the application is still running
@@ -331,11 +332,12 @@ function _M.cleanup()
     if not _M.initialised then
         return
     end
+    running = true
     if userCleanup then
         userCleanup()
         userCleanup = nil
     end
-    userMainLoop = nil
+    userMainLoop, running = nil, true
 
     for _, d in pairs(_M.devices) do
         d.terminate()
@@ -344,8 +346,18 @@ function _M.cleanup()
     system.reset()
 
     _M.initialised = false
-    running = true
     dbg.info('','------   Application Finished  ------')
+end
+
+-------------------------------------------------------------------------------
+-- Add an event that will be processed only when all dialogs, editing and
+-- main loop processing is finished.
+-- @param callback Function to run when timer is complete
+-- @param ... Function arguments
+-- @usage
+-- rinApp.addIdleEvent(print, 'things have calmed down')
+function _M.addIdleEvent(callback, ...)
+    table.insert(userEvents, { cb = callback, args = {...} })
 end
 
 -------------------------------------------------------------------------------
@@ -353,7 +365,14 @@ end
 -- @local
 local function step()
     if userMainLoop then
-       userMainLoop()
+        userMainLoop()
+    end
+    if #userEvents ~= 0 then
+        local evts = userEvents
+        userEvents = {}
+        for _, e in ipairs(evts) do
+            e.cb(unpack(e.args))
+        end
     end
     system.handleEvents()           -- handleEvents runs the event handlers
 end
@@ -372,8 +391,7 @@ function _M.delayUntil(cond)
             system.handleEvents()
         end
     else
-        dbg.error('rinApp:', 'not a callable function for delayUntil')
-        local fatal fatal[nil] = nil
+        error('rinApp: not a callable function for delayUntil')
     end
 end
 

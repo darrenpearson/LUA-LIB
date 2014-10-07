@@ -1,0 +1,17 @@
+To make a release of this:
+
+    make clean
+    <edit opkg/CONTROL/control and bump the version number>
+    make
+    make checksum
+
+Look at the checksum file created by the last step (in M01) and add this
+to the checksums file at the top of the list.
+
+Commit everything to git.
+
+Tag the tree with the revision number.
+
+Commit this to git.
+
+Go to L000-517 to build the mega package.

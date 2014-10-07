@@ -12,8 +12,10 @@ local string = string
 local bit32 = require "bit"
 local timers = require 'rinSystem.rinTimers.Pack'
 local naming = require 'rinLibrary.namings'
+local canonical = naming.canonicalisation
 local dbg = require "rinLibrary.rinDebug"
 local system = require "rinSystem.Pack"
+local utils = require 'rinSystem.utilities'
 local deepcopy = require 'rinLibrary.deepcopy'
 
 local lpeg = require 'rinLibrary.lpeg'
@@ -21,14 +23,17 @@ local C, Cg, Cs, Ct = lpeg.C, lpeg.Cg, lpeg.Cs, lpeg.Ct
 local P, Pi, R, S, V, spc = lpeg.P, lpeg.Pi, lpeg.R, lpeg.S, lpeg.V, lpeg.space
 local sdot = P'.'
 local scdot = (1 - sdot) * sdot^-1
+local equals, formatPosition = spc^0 * P'=' * spc^0
 
 -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -
 -- Define a pattern to match the display options and produce an option table.
 local function boolArg(s) return Cg(Pi(s), s) end
+local function nameArg(s) return Pi(s) / s end
 local writeArgPat = P{
             spc^0 * Ct((V'opt' * ((spc + P',')^1 * V'opt')^0)^-1) * spc^0 * P(-1),
-    opt =   V'time' + boolArg'clear' + boolArg'wait' + boolArg'once',
-    time =  (Pi'time' * spc^0 * P'=' *spc^0)^-1 * Cg(lpeg.float / tonumber, 'time')
+    opt =   V'time' + boolArg'clear' + boolArg'wait' + boolArg'once' + V'align',
+    time =  (Pi'time' * equals)^-1 * Cg(lpeg.float / tonumber, 'time'),
+    align = Pi'align' * equals * Cg(nameArg'left' + nameArg'right', 'align')
 }
 
 -------------------------------------------------------------------------------
@@ -80,58 +85,91 @@ local function strSubR400(s, stPos, endPos)
 end
 
 -------------------------------------------------------------------------------
+-- Right justify a string in a given field
+-- @param s string to justify
+-- @param w width to justify to
+-- @return justified string
+-- @usage
+-- if device.rightJustify('hello', 6) == ' hello' then
+--     print('yes')
+-- end
+-- @local
+local function rightJustify(s, w)
+    s = tostring(s)
+    local l = strLenR400(s)
+    if l >= w then
+        return s
+    end
+    if s:sub(1, 1) == '.' then l = l - 1 end
+    return string.rep(" ", w-l) .. s
+end
+
+-------------------------------------------------------------------------------
+-- Helper function to apply a callback to every element of the specified array
+-- @param t Array to modify
+-- @param f Callback function to execute
+-- @return Modified table
+-- @local
+local function xform(t, f)
+    if utils.callable(f) then
+        for i = 1, #t do
+            t[i] = f(t[i])
+        end
+    end
+    return t
+end
+
+-------------------------------------------------------------------------------
 -- Split a long string into shorter strings of multiple words
 -- that fit into length len.
+-- @param f field description table
 -- @param s String
--- @param len Length of display field
+-- @param align Alignment of result
 -- @return list of fragments of the string formatted to fit the field width
--- @see strSubR400
--- @see padDots
--- @see strLenR400
 -- @local
-local function splitWords(s, len)
+local function splitWords(f, s, align)
+    local t, p = {}, ''
+    local len, strlen, strsub = f.length, f.strlen, f.strsub
     s = tostring(s)
-    local t = {}
-    local p = ''
-    local len = len or 8
 
-    if strLenR400(s) <= len then
+    if strlen(s) <= len then
         table.insert(t, s)
-        return t
-    end
+    else
+        for w in string.gmatch(s, "%S+") do
+            if strlen(p) + strlen(w) < len then
+                if p == '' then
+                    p = w
+                else
+                    p = p .. ' '..w
+                end
+            elseif strlen(p) > len then
+                table.insert(t, strsub(p, 1, len))
+                p = strsub(p, len+1)
+                if strlen(p) + strlen(w) < len then
+                    p = p .. ' ' .. w
+                else
+                    table.insert(t, p)
+                    p = w
+                end
+            else
+                if #p > 0 then
+                    table.insert(t, p)
+                end
+                p = w
+            end
+        end
 
-    for w in string.gmatch(s, "%S+") do
-        if strLenR400(p) + strLenR400(w) < len then
-            if p == '' then
-                p = w
-            else
-                p = p .. ' '..w
-            end
-        elseif strLenR400(p) > len then
-            table.insert(t, strSubR400(p, 1, len))
-            p = strSubR400(p, len+1)
-            if strLenR400(p) + strLenR400(w) < len then
-                p = p .. ' ' .. w
-            else
-                table.insert(t,p)
-                p = w
-            end
-        else
-            if #p > 0 then
-                table.insert(t,p)
-            end
-            p = w
+        while strlen(p) > len do
+            table.insert(t, strsub(p, 1, len))
+            p = strsub(p, len+1)
+        end
+        if #p > 0 or #t == 0 then
+            table.insert(t, p)
         end
     end
 
-    while strLenR400(p) > len do
-        table.insert(t, strSubR400(p, 1, len))
-        p = strSubR400(p, len+1)
-    end
-    if #p > 0 or #t == 0 then
-        table.insert(t, p)
-    end
-    return t
+    xform(t, f[(align or 'left') .. 'Justify'])
+    return xform(t, f.finalFormat)
 end
 
 -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -
@@ -163,10 +201,13 @@ local display = {
     topleft = {
         top = true, left = true,
         length = 6,
+        rightJustify = function(s) return rightJustify(s, 6) end,
         reg = REG_DISP_TOP_LEFT,
         regUnits = REG_DISP_TOP_UNITS,
         regAuto = REG_DISP_AUTO_TOP_LEFT,
-        format = '%-6s',
+        strlen = strLenR400,
+        finalFormat = padDots,
+        strsub = strSubR400,
         units = nil,    saveUnits = 0,
         auto = nil,     saveAuto = 0
     },
@@ -174,16 +215,23 @@ local display = {
     topright = {
         top = true, right = true,
         length = 4,
+        rightJustify = function(s) return rightJustify(s, 4) end,
         reg = REG_DISP_TOP_RIGHT,
+        strlen = strLenR400,        -- need to fix these to match the weird display '8.8-8.8'
+        finalFormat = padDots,
+        strsub = strSubR400
     },
 
     bottomleft = {
         bottom = true,  left = true,
         length = 9,
+        rightJustify = function(s) return rightJustify(s, 9) end,
         reg = REG_DISP_BOTTOM_LEFT,
         regUnits = REG_DISP_BOTTOM_UNITS,
         regAuto = REG_DISP_AUTO_BOTTOM_LEFT,
-        format = '%-9s',
+        strlen = strLenR400,
+        finalFormat = padDots,
+        strsub = strSubR400,
         units = nil,    saveUnits = 0,
         auto = nil,     saveAuto = 0
     },
@@ -191,9 +239,43 @@ local display = {
     bottomright = {
         bottom = true,  right = true,
         length = 8,
+        rightJustify = function(s) return rightJustify(s, 8) end,
         reg = REG_DISP_BOTTOM_RIGHT,
-        format = '%-8s'
+        strlen = strLenR400,
+        finalFormat = padDots,
+        strsub = strSubR400
+    },
+--[[
+    pcmode = {
+        remote = true,
+        length = 7,
+        rightJustify = function(s)
+            if #s > 6 and s:sub(1,1) == '-' then
+                return s
+            end
+            return string.sub('       ' .. s, -7)
+        end,
+        reg = 0xA205,
+        strlen = function(s)
+            if #s > 0 and s:sub(1,1) == '-' then
+                return #s - 1
+            end
+            return #s
+        end,
+        finalFormat = function(s)
+            if #s > 1 and s:sub(1,1) ~= '-' then
+                s = ' ' .. s
+            end
+            return '\002' .. string.sub(s .. '        ', 1, 8) .. ' 00\003'
+        end,
+        strsub = function(s, stPos, endPos)
+            if #s > 1 and s:sub(1,1) == '-' then
+                endPos = endPos + 1
+            end
+            return s:sub(stPos, endPos)
+        end
     }
+--]]
 }
 
 --- Display Control Modes.
@@ -223,6 +305,16 @@ local display = {
 -- the message has been fully displayed (default: don't wait).  The wait implies the once option.
 -- @field clear Clear is a boolean, that clears the message from the display once it has been
 -- shown (default: don't clear).  The clear implies the once option.
+
+--- Display Fields.
+--
+-- These are use as the first arugment the the @see write and associated functions.
+--
+-- @table displayField
+-- @field bottomLeft The bottom left field
+-- @field bottomRight The bottom right field
+-- @field topLeft The top left field
+-- @field topRight The top right field
 
 --- LCD Control Modes.
 --@table lcdControlModes
@@ -261,25 +353,6 @@ function _M.lcdControl(mode)
 end
 
 -------------------------------------------------------------------------------
--- Right justify a string in a given field
--- @param s string to justify
--- @param w width to justify to
--- @return justified string
--- @usage
--- if device.rightJustify('hello', 6) == ' hello' then
---     print('yes')
--- end
-function _M.rightJustify(s, w)
-    s = tostring(s)
-    local l = strLenR400(s)
-    if l >= w then
-        return s
-    end
-    if s:sub(1,1) == '.' then l = l - 1 end
-    return string.rep(" ", w-l) .. s
-end
-
--------------------------------------------------------------------------------
 -- Remove the timer associated with sliding the display, if present and
 -- clean up
 local function removeSlideTimer(f)
@@ -314,6 +387,7 @@ local function writeAuto(f, register)
         if f.regAuto ~= nil and reg ~= f.auto then
             removeSlideTimer(f)
             f.current = nil
+            f.currentReg = nil
             private.writeRegHexAsync(f.regAuto, reg)
             f.saveAuto = f.auto
             f.auto = reg
@@ -355,6 +429,7 @@ end
 -- @local
 local function write(f, s, params)
     if f and f.reg ~= nil then
+        removeSlideTimer(f)
         if s then
             local t = writeArgs(params)
             local wait = t.wait
@@ -362,52 +437,34 @@ local function write(f, s, params)
             local once = t.once or wait or clear
             local time = math.max(t.time or 0.8, 0.2)
 
-            f.time = nil
-            s = tostring(s)
-            if s ~= f.current or clear or wait or once then
-                writeAuto(f, 0)
-                removeSlideTimer(f)
-                f.current = s
-                if f.format ~= nil then
-                    local function disp()
-                        private.writeRegHexAsync(f.reg, string.format(f.format, padDots(f.slideWords[f.slidePos])))
-                    end
+            writeAuto(f, 0)
+            f.params, f.current = t, tostring(s)
+            local slidePos, slideWords = 1, splitWords(f, f.current, t.align)
 
-                    f.slideWords = splitWords(s, f.length)
-                    f.slidePos = 1
-                    disp()
-                    if #f.slideWords > 1 then
-                        f.time = t
-                        f.slideTimer = timers.addTimer(time, time, function()
-                            f.slidePos = private.addModBase1(f.slidePos, 1, #f.slideWords, true)
-                            if f.slidePos == 1 and once then
-                                removeSlideTimer(f)
-                                wait = false
-                                if clear then
-                                    write(f, '')
-                                end
-                            else
-                                disp()
-                            end
-                        end)
-                        time = nil
-                    elseif clear then
-                        f.slideTimer = timers.addTimer(0, time, write, f, '')
-                    end
-                else
+            local function writeToDisplay(s)
+                if f.currentReg ~= s then
+                    f.currentReg = s
                     private.writeRegHexAsync(f.reg, s)
+                end
+            end
+            writeToDisplay(slideWords[1])
+
+            f.slideTimer = timers.addTimer(time, time, function()
+                slidePos = private.addModBase1(slidePos, 1, #slideWords, true)
+                if slidePos == 1 and once then
+                    removeSlideTimer(f)
+                    wait = false
                     if clear then
-                        f.slideTimer = timers.addTimer(0, time, write, f, '')
+                        private.writeRegHexAsync(f.reg, xform({''}, f.finalFormat)[1])
+                        f.params, f.current, f.currentReg = nil, '', nil
                     end
-                end
-            end
-            if wait then
-                if time ~= nil then
-                    _M.app.delay(time)
+                elseif #slideWords == 1 then
+                    removeSlideTimer(f)
                 else
-                    _M.app.delayUntil(function() return not wait end)
+                    writeToDisplay(slideWords[slidePos])
                 end
-            end
+            end)
+            _M.app.delayUntil(function() return not wait end)
         elseif f.auto == 0 then
             writeAuto(f, f.saveAuto)
         end
@@ -439,40 +496,42 @@ end
 
 -------------------------------------------------------------------------------
 -- Save the bottom left and right fields and units.
+-- @return Function that restores the bottom fields to their current values
 -- @usage
--- device.saveBot()
+-- local restoreBottom = device.saveBottom()
 -- device.writeBotLeft('fnord')
--- device.restoreBot()
-function _M.saveBot()
+-- restoreBottom()
+function _M.saveBottom()
+    local restorations = {}
     map(function(v) return v.bottom end,
         function(v)
-            v.saveCurrent = v.current
-            v.saveTime = v.time
-            v.saveUnits = v.units
+            table.insert(restorations, { f=v, c=v.current, p=v.params, u=v.units })
         end)
-end
-
--------------------------------------------------------------------------------
--- Restore the bottom left and right fields and units.
--- @usage
--- device.saveBot()
--- device.writeBotLeft('fnord')
--- device.restoreBot()
-function _M.restoreBot()
-    map(function(v) return v.bottom end,
-        function(v)
-            write(v, v.saveCurrent, v.saveTime)
-            units(v, v.saveUnits)
-        end)
+    return function()
+        for _, v in ipairs(restorations) do
+            write(v.f, v.c, v.p)
+            units(v.f, v.u)
+        end
+    end
 end
 
 -------------------------------------------------------------------------------
 -- Save the top and bottom left field auto settings
+-- @return Function that restores the left auto fields to their current values
 -- @usage
 -- device.saveAutoLeft()
 function _M.saveAutoLeft()
+    local restorations = {}
     map(function(v) return v.left end,
-        function(v) v.saveAuto = v.auto end)
+        function(v)
+            table.insert(restorations, { f=v, a=v.auto })
+            v.saveAuto = v.auto
+        end)
+    return function()
+        for _, v in ipairs(restorations) do
+            writeAuto(v.f, v.a)
+        end
+    end
 end
 
 -------------------------------------------------------------------------------
@@ -480,6 +539,7 @@ end
 -- @param where which display section to write to
 -- @param s string to display
 -- @param params displayControl parameter
+-- @see displayField
 -- @see displayControl
 -- @usage
 -- device.write('TopLeft', 'HELLO WORLD', 0.6)
@@ -493,8 +553,9 @@ end
 -- @param where which display section to write to
 -- @param register address of register to link display to.
 -- Set to 0 to enable direct control of the area
+-- @see displayField
 -- @usage
--- device.writeAutoTopLeft('grossnet')
+-- device.writeAuto('topLeft', 'grossnet')
 function _M.writeAuto(where, register)
     return writeAuto(naming.convertNameToValue(where, display), register)
 end
@@ -502,11 +563,12 @@ end
 -----------------------------------------------------------------------------
 -- Reads the current auto update register for the specified field
 -- @return register that is being used for auto update, 0 if none
+-- @see displayField
 -- @usage
--- local old = device.readAutoTopLeft()
--- device.writeAutoTopLeft(0)
+-- local old = device.readAuto('topLeft')
+-- device.writeAuto('topLeft', 'none')
 -- ...
--- device.writeAutoTopLeft(old)
+-- device.writeAuto('topLeft', old)
 function _M.readAuto(where)
     return readAuto(naming.convertNameToValue(where, display))
 end
@@ -584,9 +646,9 @@ end
 -- @see readAuto
 -- @usage
 -- local old = device.readAutoTopLeft()
--- device.writeAutoTopLeft(0)
+-- device.writeAuto('topLeft', 0)
 -- ...
--- device.writeAutoTopLeft(old)
+-- device.writeAuto('topLeft', old)
 function _M.readAutoTopLeft()
     return _M.readAuto('topLeft')
 end
@@ -612,9 +674,9 @@ end
 -- @see readAuto
 -- @usage
 -- local old = device.readAutoBotLeft()
--- device.writeAutoBotLeft(0)
+-- device.writeAuto('bottomLeft', 0)
 -- ...
--- device.writeAutoBotLeft(old)
+-- device.writeAuto('bottomLeft', old)
 function _M.readAutoBotLeft()
     return _M.readAuto('bottomLeft')
 end
@@ -730,7 +792,7 @@ local annunciatorMap = {
 }
 --- Main Units
 --@table Units
--- @field none No annunciator selected (won't clear or set)
+-- @field none No annunciator selected
 -- @field kg Kilogram annunciator
 -- @field lb Pound  annunciator
 -- @field t Ton/Tonne  annunciator
@@ -757,7 +819,7 @@ local unitAnnunciators = {
 
 --- Additional modifiers on bottom display
 --@table Other
--- @field none No annuciator selected (won't clear or set)
+-- @field none No annuciator selected
 -- @field hour Hour annunciator
 -- @field minute Minute annunciator
 -- @field second Second annunicator
@@ -869,6 +931,7 @@ end
 -- @param where which display section to write to
 -- @param unts Unit to display
 -- @param other ('per_h', 'per_m', 'per_s', 'pc', 'tot')
+-- @see displayField
 -- @usage
 -- device.writeUnits('topLeft', 'kg')
 function _M.writeUnits(where, unts, other)
@@ -912,6 +975,16 @@ function _M.restoreLcd()
     writeAutoTopAnnun(0)
     writeBotAnnuns(0)
     _M.writeUnits('bottomLeft')
+end
+
+-------------------------------------------------------------------------------
+-- Notify the library that there is a remote display attached
+-- @param name Name to be assigned to this display
+-- @param type Type of the display
+-- @param port Port used to communicate with the display
+function _M.addRemoteDisplay(name, type, port)
+    local d = nil
+    display[canonical(name)] = d
 end
 
 -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -
@@ -989,6 +1062,43 @@ deprecated.UNITS_OTHER_PER_M            = otherAunnuncitors.per_m
 deprecated.UNITS_OTHER_PER_S            = otherAunnuncitors.per_s
 deprecated.UNITS_OTHER_PC               = otherAunnuncitors.pc
 deprecated.UNITS_OTHER_TOT              = otherAunnuncitors.tot
+
+deprecated.rightJustify                 = rightJustify
+
+-------------------------------------------------------------------------------
+-- Save the bottom left and right fields and units.
+-- Don't use this function, use saveBottom instead.
+-- @function saveBot
+-- @see saveBottom
+-- @usage
+-- device.saveBot()
+-- device.writeBotLeft('fnord')
+-- device.restoreBot()
+function deprecated.saveBot()
+    map(function(v) return v.bottom end,
+        function(v)
+            v.saveCurrent = v.current
+            v.saveParams = v.params
+            v.saveUnits = v.units
+        end)
+end
+
+-------------------------------------------------------------------------------
+-- Restore the bottom left and right fields and units.
+-- Don't use this function, use saveBottom instead.
+-- @function restoreBot
+-- @see saveBottom
+-- @usage
+-- device.saveBot()
+-- device.writeBotLeft('fnord')
+-- device.restoreBot()
+function deprecated.restoreBot()
+    map(function(v) return v.bottom end,
+        function(v)
+            write(v, v.saveCurrent, v.saveParams)
+            units(v, v.saveUnits)
+        end)
+end
 
 if _TEST then
     _M.strLenR400 = strLenR400

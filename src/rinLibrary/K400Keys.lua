@@ -535,30 +535,20 @@ end
 
 -------------------------------------------------------------------------------
 -- Save all key call backs, optionally deleting all existing callbacks
--- @function saveKeyCallbacks
 -- @param keep True if the existing callbacks should be maintained
--- @return Saved state that can be restored later
--- @local
-function private.saveKeyCallbacks(keep)
-    local saved = { g=keyGroup, k=keyBinds }
-    if keep then
-        keyGroup = deepcopy(keyGroup)
-        keyBinds = deepcopy(keyBinds)
-    else
-        keyGroup = newKeyGroup(allKeyGroups)
-        keyBinds = newKeyBinds()
-    end
-    return saved
-end
+-- @return Function that when called restores the key handlers
+-- local savedKeyHandlers = device.saveKeyCallbacks()
+-- ...
+-- savedKeyHandlers()
+function _M.saveKeyCallbacks(keep)
+    local g, b = keyGroup, keyBinds
 
--------------------------------------------------------------------------------
--- Restore all key call backs from a saved state
--- @function restoreKeyCallbacks
--- @param saved Saved call back state
--- @local
-function private.restoreKeyCallbacks(saved)
-    keyGroup = saved.g
-    keyBinds = saved.k
+    if keep then
+        keyGroup, keyBinds = deepcopy(g), deepcopy(b)
+    else
+        keyGroup, keyBinds = newKeyGroup(allKeyGroups), newKeyBinds()
+    end
+    return function() keyGroup, keyBinds = g, b end
 end
 
 -------------------------------------------------------------------------------

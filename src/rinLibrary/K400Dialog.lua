@@ -36,8 +36,8 @@ local sEditKeyTimeout = 4   -- number of counts before starting a new key in sEd
 local scrUpdTm = 0.5        -- screen update frequency in Sec
 local blinkOff = false      -- blink cursor for string editing
 
-local msgDisp = false	    -- message is being displayed by dispMsg function
 local msgTimer = nil		-- timer for user message display
+local messageRestoreBottom  -- Function reference to resore the bottom after a message display, nil if no message currently
 
 -------------------------------------------------------------------------------
 -- Is a message currently being displayed?
@@ -47,13 +47,16 @@ local msgTimer = nil		-- timer for user message display
 --     device.displayMessage('hello', 2.123)
 -- end
 function _M.messageDisplayed()
-    return msgDisp
+    return messageRestoreBottom ~= nil
 end
 
 -------------------------------------------------------------------------------
 -- Is a dialog currently being displayed?
 -- @return true iff a dialog is displayed
--- @local
+-- @usage
+-- if not device.dialogRunning() then
+--     write('bottomLeft', 'hello')
+-- end
 function _M.dialogRunning()
     return dialogRunning ~= 0
 end
@@ -81,11 +84,11 @@ end
 -- Cancel a displayed message, if any.
 -- @local
 local function endDisplayMessage()
-	if msgDisp then
-        msgDisp = false
+	if messageRestoreBottom then
+        messageRestoreBottom()
+        messageRestoreBottom = nil
 	    timers.removeTimer(msgTimer)
         msgTimer = nil
-        _M.restoreBot()
     end
 end
 
@@ -104,8 +107,7 @@ function _M.displayMessage(msg, t, units, unitsOther)
 
     endDisplayMessage()
 	if msg and t > 0 then
-		msgDisp = true
-		_M.saveBot()
+		messageRestoreBottom = _M.saveBottom()
 		_M.write('bottomLeft', msg)			-- display message
 		_M.writeUnits('bottomLeft', units or 'none', unitsOther or 'none') -- display optional units
 		msgTimer = timers.addTimer(0, t, endDisplayMessage)
@@ -141,7 +143,7 @@ function _M.getKey(keyGroup, keep)
     keyGroup = keyGroup or 'all'
     local getKeyState, getKeyPressed
 
-    local saved = private.saveKeyCallbacks(keep)
+    local savedKeyHandlers = _M.saveKeyCallbacks(keep)
 
     _M.setKeyGroupCallback(keyGroup,
         function(key, state)
@@ -158,7 +160,7 @@ function _M.getKey(keyGroup, keep)
         return not _M.dialogRunning() or getKeyState
     end)
     _M.abortDialog()
-    private.restoreKeyCallbacks(saved)
+    savedKeyHandlers()
 
     return getKeyPressed, getKeyState
 end
@@ -210,7 +212,7 @@ end
 -- The first press results in the first character, the second the second and
 -- so forth.
 local keyMapping = {
-    [1] = "$/\\1",
+    [1] = "$/\\+-1",
     [2] = "ABC2",
     [3] = "DEF3",
     [4] = "GHI4",
@@ -285,7 +287,8 @@ end
 -- @param maxLen maximum number of characters to include
 -- @param units optional units to display
 -- @param unitsOther optional other units to display
--- @return value and true if ok pressed at end
+-- @return value
+-- @return true if ok pressed at end
 -- @usage
 -- local name = device.sEdit('NEW NAME', 'ZINC', 8)
 function _M.sEdit(prompt, def, maxLen, units, unitsOther)
@@ -309,7 +312,7 @@ function _M.sEdit(prompt, def, maxLen, units, unitsOther)
 
     endDisplayMessage()             -- abort any existing display prompt
     local cursorTmr = timers.addTimer(scrUpdTm, 0, blinkCursor)  -- add timer to blink the cursor
-    _M.saveBot()
+    local restoreBottom = _M.saveBottom()
 
     if sLen >= 1 then   -- string length should always be >= 1 because of 'default' assignment above
         for i=0,math.min(sLen, maxLen),1 do
@@ -425,7 +428,7 @@ function _M.sEdit(prompt, def, maxLen, units, unitsOther)
     end
     _M.abortDialog()
 
-    _M.restoreBot() -- restore previously displayed messages
+    restoreBottom() -- restore previously displayed messages
 
     timers.removeTimer(cursorTmr) -- remove cursor blink timer
     return sEditVal, ok                  -- return edited string and OK status
@@ -460,7 +463,7 @@ function _M.edit(prompt, def, typ, units, unitsOther)
     local editType = typ or 'integer'
     editing = true
     endDisplayMessage()
-    _M.saveBot()
+    local restoreBottom = _M.saveBottom()
     _M.write('bottomRight', prompt)
     if hide then
        _M.write('bottomLeft', string.rep('+',#editVal))
@@ -525,7 +528,7 @@ function _M.edit(prompt, def, typ, units, unitsOther)
         end
     end
     _M.abortDialog()
-    _M.restoreBot()
+    restoreBottom()
 
     return tonumber(editVal), ok
 end
@@ -540,9 +543,11 @@ end
 -- device.editReg('userid1', 'NAME')
 function _M.editReg(register, prompt)
     local reg = private.getRegisterNumber(register)
+    local restoreBottom = nil
+
     endDisplayMessage()
-    if (prompt) then
-        _M.saveBot()
+    if prompt then
+        restoreBottom = _M.saveBottom()
         if type(prompt) == 'string' then
             _M.write('bottomRight', prompt)
         else
@@ -563,8 +568,8 @@ function _M.editReg(register, prompt)
         end
     end
     _M.abortDialog()
-    if prompt then
-        _M.restoreBot()
+    if restoreBottom then
+        restoreBottom()
     end
     return private.readReg(reg)
 end
@@ -582,7 +587,7 @@ function _M.askOK(prompt, q, units, unitsOther)
     local askOKResult = 'cancel'
 
     endDisplayMessage()
-    _M.saveBot()
+    local restoreBottom = _M.saveBottom() 
     _M.write('bottomRight', prompt or '')
     _M.write('bottomLeft', q or '')
     _M.writeUnits('bottomLeft', units or 'none', unitsOther or 'none')
@@ -599,7 +604,7 @@ function _M.askOK(prompt, q, units, unitsOther)
         end
     end
     _M.abortDialog()
-    _M.restoreBot()
+    restoreBottom()
     return askOKResult
 end
 
@@ -630,7 +635,7 @@ function _M.selectOption(prompt, options, def, loop, units, unitsOther)
 
     editing = true
     endDisplayMessage()
-    _M.saveBot()
+    local restoreBottom = _M.saveBottom()
     _M.write('bottomRight', string.upper(prompt))
     _M.writeUnits('bottomLeft', units or 'none', unitsOther or 'none')
 
@@ -650,7 +655,7 @@ function _M.selectOption(prompt, options, def, loop, units, unitsOther)
         end
     end
     _M.abortDialog()
-    _M.restoreBot()
+    restoreBottom()
     return sel
 end
 
@@ -683,7 +688,7 @@ function _M.selectFromOptions(prompt, options, loop, units, unitsOther)
 
     editing = true
     endDisplayMessage()
-    _M.saveBot()
+    local restoreBottom = _M.saveBottom()
     _M.writeUnits('bottomLeft', units or 'none', unitsOther or 'none')
 
     _M.startDialog()
@@ -711,8 +716,53 @@ function _M.selectFromOptions(prompt, options, loop, units, unitsOther)
         end
     end
     _M.abortDialog()
-    _M.restoreBot()
+    restoreBottom()
     return options.getSelected()
+end
+
+-------------------------------------------------------------------------------
+-- Prompts operator to select from a list of options using
+-- arrow keys and ok, simultaneously showing the current value of the option
+-- @param prompt string to put on top left LCD
+-- @param options table of option strings and values
+-- @param def default selection index in options
+-- @param loop If true, top option loops to the bottom option and vice versa
+-- @param units optional units to display
+-- @param unitsOther optional other units to display
+-- @return selected option string if OK pressed or nil if CANCEL pressed
+-- @usage
+-- local opt = selectConfig('COMMAND', { {'HELP', 'ME'}, {'QUIT', 'IT'} }, 1, true)
+function _M.selectConfig(prompt, options, def, loop, units, unitsOther)
+    local opts = options or {'cancel'}
+    local sel = nil
+
+    local index = def
+
+    editing = true
+    endDisplayMessage()
+    local restoreBottom = _M.saveBottom()
+    _M.write('topLeft', string.upper(prompt))
+    _M.writeUnits('bottomLeft', units or 'none', unitsOther or 'none')
+    
+    _M.startDialog()
+    while editing and _M.app.isRunning() do
+        _M.write('bottomLeft', string.upper(opts[index][1]))
+        _M.write('bottomRight', string.upper(opts[index][2]))
+        local key = _M.getKey('arrow')
+        if not _M.dialogRunning() or key == 'cancel' then    -- editing aborted so return default
+            editing = false
+        elseif key == 'down' then
+            index = private.addModBase1(index, 1, #opts, loop)
+        elseif key == 'up' then
+            index = private.addModBase1(index, -1, #opts, loop)
+        elseif key == 'ok' then
+            sel = index
+            editing = false
+        end
+    end
+    _M.abortDialog()
+    _MrestoreBottom()
+    return sel
 end
 
 -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -

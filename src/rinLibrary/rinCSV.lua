@@ -19,7 +19,7 @@ local rename    = os.rename
 local stat      = require('posix').stat
 
 local dbg       = require "rinLibrary.rinDebug"
-local canonical = require 'rinLibrary.canonicalisation'
+local canonical = require('rinLibrary.namings').canonicalisation
 local deepcopy  = require 'rinLibrary.deepcopy'
 
 -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -
@@ -31,6 +31,11 @@ local field = '"' * Cs(((P(1) - '"') + P'""' / '"')^0) * '"' +
                     C((1 - S',\r\n"')^0)
 local record = Ct(field * (',' * field)^0) * (S('\r\n')^1 + -1)
 local sizings = nil
+
+-------------------------------------------------------------------------------
+--- CSV Functions.
+-- Functions to manage CSV files directly
+-- @section CSV
 
 -------------------------------------------------------------------------------
 -- Takes an escaped CSV string and returns a line (1d array)
@@ -206,11 +211,6 @@ local function checkCommonFields(a, b)
     end
     return n, map
 end
-
--------------------------------------------------------------------------------
---- CSV Functions.
--- Functions to manage CSV files directly
--- @section CSV
 
 --- CSV table is in the format:
 --@table CSV

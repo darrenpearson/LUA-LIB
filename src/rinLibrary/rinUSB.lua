@@ -8,13 +8,18 @@
 
 local _M = {}
 
-local usb = require "devicemounter"
 local socks = require "rinSystem.rinSockets.Pack"
 local dbg = require "rinLibrary.rinDebug"
 local rs232 = require "luars232"
-local ev_lib = require "ev_lib"
-local kb_lib = require "kb_lib"
 local utils = require 'rinSystem.utilities'
+
+local usb, ev_lib, kb_lib
+if pcall(function() usb = require "devicemounter" end) then
+    ev_lib = require "ev_lib"
+    kb_lib = require "kb_lib"
+else
+    dbg.warn('rinUSB:', 'USB not supported')
+end
 
 local userUSBRegisterCallback = nil
 local userUSBEventCallback = nil
@@ -137,12 +142,12 @@ end
 -- @param sock File descriptor the USB device is communicating with.
 -- @local
 local function eventCallback(sock)
-    local ev = ev_lib.getEvent(sock)
+    local ev = ev_lib and ev_lib.getEvent(sock)
     if ev then
         if utils.callable(userUSBEventCallback) then
             userUSBEventCallback(ev)
         end
-        local key = kb_lib.getR400Keys(ev)
+        local key = kb_lib and kb_lib.getR400Keys(ev)
         if key and utils.callable(userUSBKBDCallback) then
             userUSBKBDCallback(key)
         end
@@ -158,7 +163,7 @@ local function usbCallback(t)
     dbg.debug('', t)
     for k,v in pairs(t) do
         if v[1] == 'event' then
-            if v[2] == 'added' then
+            if v[2] == 'added' and ev_lib then
                 eventDevices[k] = ev_lib.openEvent(k)
                 socks.addSocket(eventDevices[k], eventCallback)
             elseif v[2] == 'removed' and eventDevices[k] ~= nil then
@@ -226,7 +231,7 @@ function _M.serialUSBdeviceHandler(callback, baud, data, parity, stopbits, flow)
 		                assert(port:set_flow_control(f) == noerr)
 
                         socks.addSocket(port, function ()
-                                                  local e, c, s = port:read(1, 10)
+                                                  local e, c, s = port:read(10000, 0)
                                                   if s == 0 then
                                                       socks.removeSocket(port)
                                                       callback(nil, "close", port)
@@ -237,8 +242,10 @@ function _M.serialUSBdeviceHandler(callback, baud, data, parity, stopbits, flow)
                         callback(nil, "open", port)
                     elseif v[2] == 'removed' then
                         local port = v[3]
-                        socks.removeSocket(port)
-                        callback(nil, "close", port)
+                        if port then
+                            socks.removeSocket(port)
+                            callback(nil, "close", port)
+                        end
                     end
                 end
             end
@@ -253,9 +260,11 @@ end
 -- local usb = require 'rinUSB'
 -- usb.initUSB()
 function _M.initUSB()
-    socks.addSocket(usb.init(), function (sock) usb.receiveCallback() end)
-    usb.registerCallback(usbCallback)
-    usb.checkDev()  -- call to check if any usb devices already mounted
+    if usb then
+        socks.addSocket(usb.init(), usb.receiveCallback)
+        usb.registerCallback(usbCallback)
+        usb.checkDev()  -- call to check if any usb devices already mounted
+    end
 end
 
 -------------------------------------------------------------------------------
